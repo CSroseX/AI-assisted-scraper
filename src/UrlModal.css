@@ -1,0 +1,52 @@
+.url-modal-backdrop {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.35);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.url-modal {
+  background: #fff;
+  padding: 32px 28px 24px 28px;
+  border-radius: 12px;
+  box-shadow: 0 4px 32px rgba(0,0,0,0.18);
+  min-width: 340px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.url-modal h2 {
+  margin: 0 0 18px 0;
+  font-size: 1.2em;
+  color: #202123;
+}
+.url-modal input {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid #ddd;
+  border-radius: 7px;
+  font-size: 1em;
+  margin-bottom: 10px;
+  outline: none;
+}
+.url-modal button[type="submit"] {
+  background: #10a37f;
+  color: #fff;
+  border: none;
+  padding: 10px 22px;
+  border-radius: 7px;
+  font-size: 1em;
+  cursor: pointer;
+  margin-top: 4px;
+  transition: background 0.2s;
+}
+.url-modal button[type="submit"]:hover {
+  background: #0d8a6b;
+}
+.url-modal .error {
+  color: #ff5c5c;
+  font-size: 0.98em;
+  margin-bottom: 6px;
+} 
