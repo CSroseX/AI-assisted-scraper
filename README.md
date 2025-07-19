@@ -1,70 +1,74 @@
-# Getting Started with Create React App
+# AI-Assisted-scraper
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+Softnerve Assignment Round 1
 
-## Available Scripts
+## Project Overview
+AI-Assisted-scraper is a multi-service application that leverages AI to scrape, process, and review web content. It features a React frontend, a Node.js/Express backend for scraping and AI integration, a FastAPI service for versioning with ChromaDB, and a Flask-based RL backend for reinforcement learning-based review.
 
-In the project directory, you can run:
+## Capabilities
+- Scrape web pages and extract main content and screenshots
+- Rewrite and simplify content using Gemini AI
+- Contextual chat and AI-powered review of rewritten content
+- Version control for content using ChromaDB (FastAPI)
+- Reinforcement learning-based review and feedback (Flask RL backend)
 
-### `npm start`
+---
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+## Instructions to Run
+This project requires **four terminals** to run all services simultaneously. Follow the steps below for each service.
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+### 1. Frontend (React)
+```
+cd ai-assisted-scraper
+npm install
+npm start
+```
+- Runs on [http://localhost:3000](http://localhost:3000)
 
-### `npm test`
+### 2. Backend (Node.js/Express)
+```
+cd ai-assisted-scraper/backend
+npm install
+npm start
+```
+- Runs on [http://localhost:5000](http://localhost:5000) by default
+- Requires a `.env` file with your Gemini API key:
+  ```
+  GEMINI_API_KEY=your_google_gemini_api_key
+  ```
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+### 3. ChromaDB FastAPI Service (Python)
+Install dependencies (requires Python 3.8+):
+```
+pip install fastapi uvicorn chromadb pydantic
+```
+Run the service:
+```
+cd ai-assisted-scraper/backend/chroma_service
+uvicorn main:app --host 0.0.0.0 --port 8001
+```
+- Runs on [http://localhost:8001](http://localhost:8001)
 
-### `npm run build`
+### 4. RL Backend (Flask + Stable Baselines3)
+Install dependencies:
+```
+pip install flask flask_cors stable-baselines3 gym numpy
+```
+Run the service:
+```
+cd ai-assisted-scraper/backend/chroma_service
+python rl_backend.py
+```
+- Runs on [http://localhost:5050](http://localhost:5050)
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+---
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+## Notes
+- Ensure all services are running for full functionality.
+- Python dependencies for FastAPI and RL backend can be installed in the same environment.
+- The backend requires a valid Gemini API key for AI features.
+- ChromaDB will store versioned content in-memory by default.
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+---
 
-### `npm run eject`
-
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
-
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
-
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
-
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
-
-## Learn More
-
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
-
-To learn React, check out the [React documentation](https://reactjs.org/).
-
-### Code Splitting
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
-
-### Analyzing the Bundle Size
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
-
-### Making a Progressive Web App
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
-
-### Advanced Configuration
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
-
-### Deployment
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
-
-### `npm run build` fails to minify
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+For any issues, please check the respective service logs for errors.
