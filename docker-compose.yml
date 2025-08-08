@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  frontend:
+    build: .
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+  backend:
+    build: ./backend
+    ports:
+      - "5000:5000"
+    env_file:
+      - ./backend/.env
+    depends_on:
+      - chromadb
+      - rl_backend
+
+  chromadb:
+    build:
+      context: ./backend/chroma_service
+      dockerfile: dockerfile.chromadb
+    ports:
+      - "8001:8001"
+
+  rl_backend:
+    build:
+      context: ./backend/chroma_service
+      dockerfile: dockerfile.rl
+    ports:
+      - "5050:5050"
