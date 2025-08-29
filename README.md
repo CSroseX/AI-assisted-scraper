@@ -1,7 +1,5 @@
 # AI-Assisted-scraper
 
-Softnerve Assignment Round 1
-
 ## Project Overview
 AI-Assisted-scraper is a multi-service application that leverages AI to scrape, process, and review web content. It features a React frontend, a Node.js/Express backend for scraping and AI integration, a FastAPI service for versioning with ChromaDB, and a Flask-based RL backend for reinforcement learning-based review.
 
