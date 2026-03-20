@@ -19,41 +19,91 @@ app.post('/scrape', async (req, res) => {
         return res.status(400).json({ error: 'No URL provided' });
     }
 
-    const browser = await chromium.launch();
-    const page = await browser.newPage();
-    await page.goto(url, { waitUntil: 'domcontentloaded' });
+    let browser;
+    try {
+      browser = await chromium.launch();
+      const page = await browser.newPage();
+      await page.goto(url, { waitUntil: 'domcontentloaded' });
 
-    const content = await page.evaluate(() => {
-        // Try to get main content, fallback to body text
-        const main = document.querySelector('main');
-        return main ? main.innerText : document.body.innerText;
-    });
+      const content = await page.evaluate(() => {
+          // Try to get main content, fallback to body text
+          const main = document.querySelector('main');
+          return main ? main.innerText : document.body.innerText;
+      });
 
-    //screenshot
-    const screenshotPath = path.join(__dirname, 'screenshots', `${Date.now()}.png`);
-    fs.mkdirSync(path.dirname(screenshotPath), { recursive: true });
-    await page.screenshot({ path: screenshotPath, fullPage: true });
+      //screenshot
+      const screenshotPath = path.join(__dirname, 'screenshots', `${Date.now()}.png`);
+      fs.mkdirSync(path.dirname(screenshotPath), { recursive: true });
+      await page.screenshot({ path: screenshotPath, fullPage: true });
 
-    await browser.close();
-
-    // Return only the relative path for the frontend
-    const relativeScreenshotPath = 'screenshots/' + path.basename(screenshotPath);
-    res.json({ content, screenshotPath: relativeScreenshotPath });
+      // Return only the relative path for the frontend
+      const relativeScreenshotPath = 'screenshots/' + path.basename(screenshotPath);
+      res.json({ content, screenshotPath: relativeScreenshotPath });
+    } catch (err) {
+      const isMissingBrowser = String(err.message || '').includes('Executable doesn\'t exist');
+      if (isMissingBrowser) {
+        return res.status(500).json({
+          error: 'Playwright browser binaries are not installed.',
+          fix: 'Run `npm.cmd exec playwright install chromium` inside backend folder.'
+        });
+      }
+      console.error('Scrape API error:', err.message);
+      return res.status(500).json({ error: err.message || 'Scrape failed' });
+    } finally {
+      if (browser) {
+        await browser.close().catch(() => {});
+      }
+    }
 });
 
-// Shared Gemini API call helper
+const GROQ_API_BASE = 'https://api.groq.com/openai/v1';
+const GROQ_MODEL = process.env.GROQ_MODEL || 'openai/gpt-oss-20b';
+
+// Shared LLM API call helper (Groq OpenAI-compatible endpoint)
+async function callGroq(messages, temperature = 0.2) {
+  try {
+    const response = await axios.post(
+      `${GROQ_API_BASE}/chat/completions`,
+      {
+        model: GROQ_MODEL,
+        messages,
+        temperature
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${process.env.GEMINI_API_KEY}`
+        }
+      }
+    );
+
+    return response.data?.choices?.[0]?.message?.content;
+  } catch (err) {
+    const status = err.response?.status;
+    const details = err.response?.data?.error?.message || err.response?.data?.error || err.message;
+    const wrapped = new Error(status === 429
+      ? `Groq rate limit reached (429): ${details}`
+      : `Groq request failed${status ? ` (${status})` : ''}: ${details}`);
+    wrapped.status = status;
+    throw wrapped;
+  }
+}
+
+function classifyIntentHeuristic(message = '') {
+  const text = String(message).toLowerCase();
+  if (!text.trim()) return 'chat';
+
+  if (/summarize|summary|tldr|key points|overview/.test(text)) return 'summarize';
+  if (/review|grammar|quality|well written|critique/.test(text)) return 'review';
+  if (/rewrite|rephrase|simplify|paraphrase|change tone|spin/.test(text)) return 'spin';
+  return 'chat';
+}
+
+// Kept function name to avoid touching the rest of the code paths
 async function callGemini(prompt) {
-  const response = await axios.post(
-    `https://generativelanguage.googleapis.com/v1/models/gemini-2.5-pro:generateContent?key=${process.env.GEMINI_API_KEY}`,
-    {
-      contents: [
-        { role: "user", parts: [ { text: prompt } ] }
-      ]
-    },
-    { headers: { 'Content-Type': 'application/json' } }
-  );
-  const candidates = response.data.candidates;
-  return candidates && candidates[0] && candidates[0].content && candidates[0].content.parts[0].text;
+  return await callGroq([
+    { role: 'user', content: prompt }
+  ]);
 }
 
 // Extracted handler: spin content
@@ -72,27 +122,21 @@ async function handleReview(content) {
 
 // Extracted handler: chat contextually
 async function handleChat(content, userMessage, history = []) {
-  const contents = [
-    { role: "model", parts: [{ text: "Context: " + content }] }
+  const messages = [
+    { role: 'system', content: 'Context: ' + content }
   ];
   if (Array.isArray(history)) {
     for (const msg of history) {
       if (msg.role === 'user') {
-        contents.push({ role: 'user', parts: [{ text: msg.content }] });
+        messages.push({ role: 'user', content: msg.content });
       } else if (msg.role === 'assistant') {
-        contents.push({ role: 'model', parts: [{ text: msg.content }] });
+        messages.push({ role: 'assistant', content: msg.content });
       }
     }
   }
-  contents.push({ role: "user", parts: [{ text: userMessage }] });
-  
-  const response = await axios.post(
-    `https://generativelanguage.googleapis.com/v1/models/gemini-2.5-pro:generateContent?key=${process.env.GEMINI_API_KEY}`,
-    { contents },
-    { headers: { 'Content-Type': 'application/json' } }
-  );
-  const candidates = response.data.candidates;
-  const reply = candidates && candidates[0] && candidates[0].content && candidates[0].content.parts[0].text;
+  messages.push({ role: 'user', content: userMessage });
+
+  const reply = await callGroq(messages);
   return { reply };
 }
 
@@ -105,6 +149,10 @@ async function handleSummarize(content) {
 
 // Intent classifier using Gemini
 async function classifyIntent(message) {
+  // Prefer cheap local heuristics to avoid an extra LLM call per /ask request.
+  const heuristicIntent = classifyIntentHeuristic(message);
+  if (heuristicIntent !== 'chat') return heuristicIntent;
+
   const prompt = `
 You are an intent classifier. Given a user message, classify it into EXACTLY one of these four categories:
 - spin     (rewrite, rephrase, simplify, paraphrase, change tone)
@@ -211,6 +259,20 @@ app.post('/review', async (req, res) => {
   } catch (err) {
     console.error("Review API error:", err.message, err.response?.data);
     res.status(500).json({ error: err.message, details: err.response?.data });
+  }
+});
+
+// Summarize endpoint for Gemini
+app.post('/summarize', async (req, res) => {
+  const { content } = req.body;
+  if (!content) return res.status(400).json({ error: 'No content provided' });
+
+  try {
+    const result = await handleSummarize(content);
+    res.json(result);
+  } catch (err) {
+    console.error("Summarize API error:", err.message);
+    res.status(500).json({ error: err.message });
   }
 });
 
