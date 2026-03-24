@@ -34,6 +34,29 @@
   text-align: left;
 }
 
+.message.assistant table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 10px;
+  margin-bottom: 6px;
+  display: block;
+  overflow-x: auto;
+}
+
+.message.assistant th,
+.message.assistant td {
+  border: 1px solid #c8cdd5;
+  padding: 8px 10px;
+  vertical-align: top;
+  text-align: left;
+  white-space: normal;
+}
+
+.message.assistant th {
+  background: #dce2ea;
+  font-weight: 600;
+}
+
 .input-area {
   display: flex;
   padding: 16px 24px;

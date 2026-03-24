@@ -1,6 +1,21 @@
 import React, { useState, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import './Chat.css';
+
+function normalizeAssistantMarkdown(content) {
+  const text = String(content || '');
+
+  // Handle model outputs where markdown table rows are flattened into one line,
+  // e.g. "| h1 | h2 | |---|---| | r1c1 | r1c2 |".
+  const looksLikeFlattenedTable = /\|\s*[-:]{3,}[-:|\s]*\|/.test(text) && !/\n\|/.test(text);
+  if (!looksLikeFlattenedTable) return text;
+
+  return text
+    .replace(/\|\s+\|/g, '|\n|')
+    .replace(/\n\s+/g, '\n')
+    .trim();
+}
 
 function Chat({ messages, onSendMessage, spunMsgIndex, showEditButton, onEditSpun, thumbAnim, onThumbUp, onThumbDown, feedbackSubmitted }) {
   const [input, setInput] = useState('');
@@ -30,7 +45,9 @@ function Chat({ messages, onSendMessage, spunMsgIndex, showEditButton, onEditSpu
         {messages.map((msg, idx) => (
           <div key={idx} className={`message ${msg.role}`}> 
             {typeof msg.content === 'string' && msg.role === 'assistant' ? (
-              <ReactMarkdown>{msg.content}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                {normalizeAssistantMarkdown(msg.content)}
+              </ReactMarkdown>
             ) : (
               <span>{msg.content}</span>
             )}
