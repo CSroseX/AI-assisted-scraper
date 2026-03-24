@@ -1,68 +1,134 @@
-import os
+import random
+import uuid
+from collections import Counter
+
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import DummyVecEnv
-import gym
-import numpy as np
 
 app = Flask(__name__)
 CORS(app)
 
-# Dummy text environment for RL (replace with real text env for production)
-class TextReviewEnv(gym.Env):
-    def __init__(self):
-        super(TextReviewEnv, self).__init__()
-        self.action_space = gym.spaces.Discrete(2)  # 0: bad, 1: good (dummy)
-        self.observation_space = gym.spaces.Box(low=0, high=1, shape=(1,), dtype=np.float32)
-        self.state = np.array([0.0])
-        self.last_action = 0
-    def reset(self):
-        self.state = np.array([0.0])
-        return self.state
-    def step(self, action):
-        self.last_action = action
-        reward = 0.0  # reward will be set externally
-        done = True
-        info = {}
-        return self.state, reward, done, info
+# Lightweight online preference learner:
+# action 0 -> concise review style
+# action 1 -> detailed review style
+action_values = {0: 0.0, 1: 0.0}
+action_counts = {0: 0, 1: 0}
+epsilon = 0.2
 
-# Create and wrap the environment
-env = DummyVecEnv([lambda: TextReviewEnv()])
-model = PPO('MlpPolicy', env, verbose=0)
+# Maps review_id -> action metadata so /feedback can update the correct arm.
+review_store = {}
+last_review_id = None
 
-# Store last obs/action for feedback
-last_obs = None
-last_action = None
+
+def tokenize(text):
+    return [t.strip(".,!?;:\"'()[]{}") for t in text.split() if t.strip()]
+
+
+def build_text_features(content):
+    tokens = tokenize(content.lower())
+    wc = len(tokens)
+    sentence_count = max(1, content.count(".") + content.count("!") + content.count("?"))
+    avg_sentence_len = wc / sentence_count
+    common = Counter(tokens).most_common(5)
+    keywords = [w for w, _ in common if len(w) > 3]
+    return {
+        "word_count": wc,
+        "sentence_count": sentence_count,
+        "avg_sentence_len": round(avg_sentence_len, 1),
+        "keywords": keywords
+    }
+
+
+def choose_action():
+    if random.random() < epsilon:
+        return random.choice([0, 1])
+    return 0 if action_values[0] >= action_values[1] else 1
+
+
+def render_review(content, features, action):
+    if action == 0:
+        return (
+            "Concise review:\n"
+            f"- Length: {features['word_count']} words across {features['sentence_count']} sentences.\n"
+            f"- Readability: average sentence length is {features['avg_sentence_len']} words.\n"
+            "- Improvement: tighten repetitive phrasing and keep one idea per sentence for clarity."
+        )
+
+    keyword_text = ", ".join(features["keywords"]) if features["keywords"] else "(no dominant keywords)"
+    return (
+        "Detailed review:\n"
+        f"1. Structure: The text has {features['sentence_count']} sentences and {features['word_count']} words. "
+        "Consider clearer paragraph boundaries for better flow.\n"
+        f"2. Clarity: Average sentence length is {features['avg_sentence_len']} words; split long sentences where possible.\n"
+        f"3. Focus: Dominant terms are {keyword_text}. Remove redundancy around repeated terms.\n"
+        "4. Revision tip: Start each paragraph with a topic sentence, then support it with one concrete detail."
+    )
 
 @app.route('/review', methods=['POST'])
 def review():
-    global last_obs, last_action
-    data = request.json
-    # For demo, ignore input and generate dummy review
-    obs = env.reset()
-    action, _ = model.predict(obs)
-    last_obs = obs
-    last_action = action
-    # Dummy review text
-    review_text = "This is a dummy RL-based review. Action: {}".format(int(action[0]))
-    return jsonify({'reviewed': review_text, 'action': int(action[0])})
+    global last_review_id
+    data = request.get_json(silent=True) or {}
+    content = str(data.get('spunContent', '')).strip()
+    if not content:
+        return jsonify({'error': 'spunContent is required'}), 400
+
+    action = choose_action()
+    features = build_text_features(content)
+    review_text = render_review(content, features, action)
+
+    review_id = str(uuid.uuid4())
+    review_store[review_id] = {
+        'action': action,
+        'content_chars': len(content)
+    }
+    last_review_id = review_id
+
+    return jsonify({
+        'reviewed': review_text,
+        'action': action,
+        'review_id': review_id,
+        'policy': {
+            'epsilon': epsilon,
+            'action_values': action_values,
+            'action_counts': action_counts
+        }
+    })
 
 @app.route('/feedback', methods=['POST'])
 def feedback():
-    global last_obs, last_action
-    data = request.json
-    reward = float(data.get('reward', 0))
-    # One training step with the reward
-    if last_obs is not None and last_action is not None:
-        # Manually set reward for the last action
-        env.envs[0].last_action = last_action[0]
-        # Stable Baselines3 does not support manual reward injection directly,
-        # so this is a placeholder for a real RL text environment.
-        # In production, use a custom env that takes reward from feedback.
-        # Here, we just call learn() for demonstration.
-        model.learn(total_timesteps=1)
-    return jsonify({'status': 'feedback received', 'reward': reward})
+    data = request.get_json(silent=True) or {}
+
+    try:
+        reward = float(data.get('reward', 0))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'reward must be a number'}), 400
+
+    review_id = data.get('review_id') or last_review_id
+    if not review_id or review_id not in review_store:
+        return jsonify({'error': 'No valid review_id to apply feedback'}), 400
+
+    action = review_store[review_id]['action']
+    action_counts[action] += 1
+
+    # Incremental mean update for selected action.
+    n = action_counts[action]
+    action_values[action] = action_values[action] + (reward - action_values[action]) / n
+
+    return jsonify({
+        'status': 'feedback received',
+        'reward': reward,
+        'review_id': review_id,
+        'action': action,
+        'policy': {
+            'action_values': action_values,
+            'action_counts': action_counts
+        }
+    })
+
+
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({'status': 'ok', 'reviews_seen': len(review_store)})
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5050) 

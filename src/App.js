@@ -147,7 +147,11 @@ const reviewContent = async (spunContent) => {
     });
     if (!res.ok) throw new Error('Review failed');
     const data = await res.json();
-    return data.reviewed;
+    return {
+      reviewed: data.reviewed,
+      reviewId: data.review_id,
+      action: data.action
+    };
   } catch (err) {
     alert('Error: ' + err.message);
     return null;
@@ -170,6 +174,7 @@ function App() {
   const [editValue, setEditValue] = useState(''); // NEW: edit value
   const [lastSavedVersion, setLastSavedVersion] = useState(null); // NEW: last saved version object
   const [versionHistory, setVersionHistory] = useState([]); // version history
+  const [currentReviewId, setCurrentReviewId] = useState(null); // latest RL review id
   const [showVersionHistoryModal, setShowVersionHistoryModal] = useState(false); // version history modal
   const [expandedVersion, setExpandedVersion] = useState(null); // expanded version id
   // Feedback state for latest reviewed content
@@ -355,8 +360,24 @@ function App() {
         await saveVersion(spinResult.spun, null, 'ai-writer');
         const history = await fetchVersionHistory();
         setVersionHistory(history);
-        // AI Reviewer: Refine the spun content (do not add to chat)
-        await reviewContent(spinResult.spun);
+        // AI Reviewer: Refine the spun content and show result in chat.
+        const reviewResult = await reviewContent(spinResult.spun);
+        if (reviewResult?.reviewed) {
+          setCurrentReviewId(reviewResult.reviewId || null);
+          setSessions(sessions => sessions.map(session => {
+            if (session.id !== currentSessionId) return session;
+            return {
+              ...session,
+              messages: [...session.messages, {
+                role: 'assistant',
+                content: reviewResult.reviewed,
+                type: 'reviewedContent',
+                reviewId: reviewResult.reviewId,
+                action: reviewResult.action
+              }]
+            };
+          }));
+        }
       }
     } else {
       setSessions(sessions => sessions.map(session =>
@@ -459,7 +480,24 @@ function App() {
         return { ...session, messages: filteredMsgs, scrapedContent: newContent };
       }));
       // AI Reviewer: Refine the edited content
-      await reviewContent(newContent); // Do not add to chat
+      const reviewResult = await reviewContent(newContent);
+      if (reviewResult?.reviewed) {
+        setCurrentReviewId(reviewResult.reviewId || null);
+        setSessions(sessions => sessions.map(session => {
+          if (session.id !== currentSessionId) return session;
+          const msgs = [...session.messages];
+          if (msgs.length && msgs[msgs.length - 1].content === 'AI Reviewer is refining the content...') {
+            msgs[msgs.length - 1] = {
+              role: 'assistant',
+              content: reviewResult.reviewed,
+              type: 'reviewedContent',
+              reviewId: reviewResult.reviewId,
+              action: reviewResult.action
+            };
+          }
+          return { ...session, messages: msgs };
+        }));
+      }
       // Save edited version only (not reviewer output)
       const history = await fetchVersionHistory();
       setVersionHistory(history);
@@ -482,7 +520,7 @@ function App() {
       await fetch('http://localhost:5050/feedback', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reward: 1 }),
+        body: JSON.stringify({ reward: 1, review_id: lastMsg.reviewId || currentReviewId }),
       });
       // Reviewer refines based on feedback
       const reviewed = await reviewContent(lastMsg.content + '\n\nUser feedback: ' + feedback);
@@ -491,13 +529,14 @@ function App() {
         // Replace reviewer loader with reviewed content
         const msgs = [...session.messages];
         if (msgs.length && msgs[msgs.length - 1].content === 'AI Reviewer is refining the content...') {
-          msgs[msgs.length - 1] = { role: 'assistant', content: reviewed || 'AI Reviewer failed to reply.', type: 'reviewedContent' };
+          msgs[msgs.length - 1] = { role: 'assistant', content: reviewed?.reviewed || 'AI Reviewer failed to reply.', type: 'reviewedContent', reviewId: reviewed?.reviewId, action: reviewed?.action };
         }
         return { ...session, messages: msgs };
       }));
       // Save reviewed content as a version
-      if (reviewed) {
-        await saveVersion(reviewed, null, 'ai-reviewer');
+      if (reviewed?.reviewed) {
+        setCurrentReviewId(reviewed.reviewId || null);
+        await saveVersion(reviewed.reviewed, null, 'ai-reviewer');
         const history = await fetchVersionHistory();
         setVersionHistory(history);
       }
@@ -597,7 +636,7 @@ function App() {
             await fetch('http://localhost:5050/feedback', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ reward: 1 }),
+              body: JSON.stringify({ reward: 1, review_id: currentReviewId }),
             });
           }}
           onThumbDown={async () => {
@@ -610,7 +649,7 @@ function App() {
             await fetch('http://localhost:5050/feedback', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ reward: -1 }),
+              body: JSON.stringify({ reward: -1, review_id: currentReviewId }),
             });
           }}
           feedbackSubmitted={feedbackSubmitted}
