@@ -13,6 +13,18 @@ app.use('/screenshots', express.static(path.join(__dirname, 'screenshots')));
 
 const { chromium } = require('playwright');
 
+function clampTextForModel(text, maxChars = 12000) {
+  const source = String(text || '');
+  if (source.length <= maxChars) {
+    return { text: source, truncated: false };
+  }
+
+  return {
+    text: source.slice(0, maxChars) + '\n\n[Content truncated to fit model limits.]',
+    truncated: true
+  };
+}
+
 app.post('/scrape', async (req, res) => {
     const { url } = req.body;
     if (!url) {
@@ -31,13 +43,17 @@ app.post('/scrape', async (req, res) => {
           return main ? main.innerText : document.body.innerText;
       });
 
-      //screenshot
-      const screenshotPath = path.join(__dirname, 'screenshots', `${Date.now()}.png`);
-      fs.mkdirSync(path.dirname(screenshotPath), { recursive: true });
-      await page.screenshot({ path: screenshotPath, fullPage: true });
+      // Attempt screenshot, but do not fail scraping if screenshot times out.
+      let relativeScreenshotPath = null;
+      try {
+        const screenshotPath = path.join(__dirname, 'screenshots', `${Date.now()}.png`);
+        fs.mkdirSync(path.dirname(screenshotPath), { recursive: true });
+        await page.screenshot({ path: screenshotPath, fullPage: true, timeout: 10000 });
+        relativeScreenshotPath = 'screenshots/' + path.basename(screenshotPath);
+      } catch (shotErr) {
+        console.warn('Screenshot failed, continuing without image:', shotErr.message);
+      }
 
-      // Return only the relative path for the frontend
-      const relativeScreenshotPath = 'screenshots/' + path.basename(screenshotPath);
       res.json({ content, screenshotPath: relativeScreenshotPath });
     } catch (err) {
       const isMissingBrowser = String(err.message || '').includes('Executable doesn\'t exist');
@@ -93,6 +109,9 @@ function classifyIntentHeuristic(message = '') {
   const text = String(message).toLowerCase();
   if (!text.trim()) return 'chat';
 
+  // Keep broad "what is ... about" style questions in conversational chat.
+  if (/\bwhat(?:'s| is)\b.*\babout\b/.test(text)) return 'chat';
+
   if (/summarize|summary|tldr|key points|overview/.test(text)) return 'summarize';
   if (/review|grammar|quality|well written|critique/.test(text)) return 'review';
   if (/rewrite|rephrase|simplify|paraphrase|change tone|spin/.test(text)) return 'spin';
@@ -108,25 +127,29 @@ async function callGemini(prompt) {
 
 // Extracted handler: spin content
 async function handleSpin(content, customPrompt = "Rewrite in modern English and simplify the tone.") {
-  const prompt = `${customPrompt}\n\n${content}`;
+  const clamped = clampTextForModel(content, 12000);
+  const prompt = `${customPrompt}\n\n${clamped.text}`;
   const spun = await callGemini(prompt);
-  return { spun, metadata: { prompt: customPrompt, timestamp: Date.now() } };
+  return { spun, metadata: { prompt: customPrompt, timestamp: Date.now(), truncated: clamped.truncated } };
 }
 
 // Extracted handler: review content
 async function handleReview(content) {
-  const reviewerPrompt = "You are an expert editor and reviewer. Refine and critique the following text for clarity, coherence, and style. Suggest improvements and rewrite as needed.\n\n" + content;
+  const clamped = clampTextForModel(content, 12000);
+  const reviewerPrompt = "You are an expert editor and reviewer. Refine and critique the following text for clarity, coherence, and style. Suggest improvements and rewrite as needed.\n\n" + clamped.text;
   const reviewed = await callGemini(reviewerPrompt);
-  return { reviewed };
+  return { reviewed, metadata: { truncated: clamped.truncated } };
 }
 
 // Extracted handler: chat contextually
 async function handleChat(content, userMessage, history = []) {
+  const clampedContext = clampTextForModel(content, 8000);
+  const trimmedHistory = Array.isArray(history) ? history.slice(-8) : [];
   const messages = [
-    { role: 'system', content: 'Context: ' + content }
+    { role: 'system', content: 'Context: ' + clampedContext.text }
   ];
-  if (Array.isArray(history)) {
-    for (const msg of history) {
+  if (trimmedHistory.length) {
+    for (const msg of trimmedHistory) {
       if (msg.role === 'user') {
         messages.push({ role: 'user', content: msg.content });
       } else if (msg.role === 'assistant') {
@@ -142,9 +165,10 @@ async function handleChat(content, userMessage, history = []) {
 
 // NEW handler: summarize content
 async function handleSummarize(content) {
-  const summarizePrompt = "Summarize the following text concisely. Focus on key points and main ideas.\n\n" + content;
+  const clamped = clampTextForModel(content, 12000);
+  const summarizePrompt = "Summarize the following text concisely. Focus on key points and main ideas.\n\n" + clamped.text;
   const summary = await callGemini(summarizePrompt);
-  return { summary };
+  return { summary, metadata: { truncated: clamped.truncated } };
 }
 
 // Intent classifier using Gemini
@@ -210,11 +234,15 @@ app.post('/ask', async (req, res) => {
     console.warn('[/ask] Intent classification failed, falling back to chat:', err.message);
   }
 
+  console.log(`[/ask] intent=${intent} message="${String(message || '').slice(0, 120)}" content_chars=${String(content || '').length}`);
+
   try {
     const result = await routeToHandler(intent, content, message, history);
+    console.log(`[/ask] routed_to=${intent} status=success`);
     return res.json({ ...result, _routed_to: intent });
   } catch (err) {
     console.error('[/ask] Handler error:', err.message);
+    console.error(`[/ask] routed_to=${intent} status=error`);
     return res.status(500).json({ error: 'Something went wrong', _routed_to: intent });
   }
 });

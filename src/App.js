@@ -23,7 +23,16 @@ const scrapeUrl = async (url) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url }),
     });
-    if (!res.ok) throw new Error('Scraping failed');
+    if (!res.ok) {
+      let message = 'Scraping failed';
+      try {
+        const errData = await res.json();
+        message = errData?.error || errData?.fix || message;
+      } catch (_) {
+        // Keep generic message if backend does not return JSON.
+      }
+      throw new Error(message);
+    }
     const data = await res.json();
     // data.content: the scraped text
     // data.screenshotPath: the path to the screenshot on the backend
@@ -88,20 +97,43 @@ const fetchVersionHistory = async () => {
   }
 };
 
-// Helper to call /chat endpoint for contextual AI
-const chatWithAI = async (context, history, userMessage) => {
+// Helper to call /ask endpoint and return route-aware response text.
+const askWithRouting = async (content, history, message) => {
   try {
-    const res = await fetch('http://localhost:5000/chat', {
+    const res = await fetch('http://localhost:5000/ask', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ context, history, userMessage }),
+      body: JSON.stringify({ content, history, message }),
     });
-    if (!res.ok) throw new Error('Chat failed');
+
+    if (!res.ok) {
+      let messageText = 'Request failed';
+      try {
+        const errData = await res.json();
+        messageText = errData?.error || messageText;
+      } catch (_) {
+        // Keep generic message when backend error body is not JSON.
+      }
+      throw new Error(messageText);
+    }
+
     const data = await res.json();
-    return data.reply;
+    const routedTo = data?._routed_to || 'chat';
+
+    const fieldByRoute = {
+      chat: data?.reply,
+      spin: data?.spun,
+      review: data?.reviewed,
+      summarize: data?.summary
+    };
+
+    const fallbackText = data?.reply || data?.spun || data?.reviewed || data?.summary;
+    const text = fieldByRoute[routedTo] || fallbackText || 'AI failed to reply.';
+
+    return { text, routedTo };
   } catch (err) {
     alert('Error: ' + err.message);
-    return null;
+    return { text: null, routedTo: 'chat' };
   }
 };
 
@@ -197,6 +229,23 @@ function App() {
         ));
       }
     } else {
+      const context = currentSession.scrapedContent || '';
+      if (!context.trim()) {
+        setSessions(sessions => sessions.map(session =>
+          session.id === currentSessionId
+            ? {
+                ...session,
+                messages: [
+                  ...session.messages,
+                  { role: 'user', content: text },
+                  { role: 'assistant', content: 'No scraped content is available yet. Please submit a URL first.' }
+                ]
+              }
+            : session
+        ));
+        return;
+      }
+
       // Real-time AI chat with context
       const userMsg = { role: 'user', content: text };
       setSessions(sessions => sessions.map(session =>
@@ -205,18 +254,24 @@ function App() {
           : session
       ));
       // Gather context and history
-      const context = currentSession.scrapedContent || '';
       const history = currentSession.messages.filter(m => m.role === 'user' || m.role === 'assistant');
-      const aiReply = await chatWithAI(context, history, text);
+      const aiResult = await askWithRouting(context, history, text);
       setSessions(sessions => sessions.map(session => {
         if (session.id !== currentSessionId) return session;
         // Replace the last 'Thinking...' message with the AI reply
         const msgs = [...session.messages];
         if (msgs.length && msgs[msgs.length - 1].content === 'Thinking...') {
-          msgs[msgs.length - 1] = { role: 'assistant', content: aiReply || 'AI failed to reply.' };
+          msgs[msgs.length - 1] = {
+            role: 'assistant',
+            content: aiResult.text || 'AI failed to reply.',
+            route: aiResult.routedTo
+          };
         }
         return { ...session, messages: msgs };
       }));
+      if (aiResult?.routedTo) {
+        setNotifications(n => [...n, `Routed to: ${aiResult.routedTo}`]);
+      }
     }
   };
 
@@ -300,9 +355,9 @@ function App() {
         await saveVersion(spinResult.spun, null, 'ai-writer');
         const history = await fetchVersionHistory();
         setVersionHistory(history);
+        // AI Reviewer: Refine the spun content (do not add to chat)
+        await reviewContent(spinResult.spun);
       }
-      // AI Reviewer: Refine the spun content (do not add to chat)
-      await reviewContent(spinResult.spun);
     } else {
       setSessions(sessions => sessions.map(session =>
         session.id === currentSessionId
