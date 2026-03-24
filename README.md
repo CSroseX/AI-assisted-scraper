@@ -43,12 +43,12 @@ pip install fastapi uvicorn chromadb pydantic
 Run the service:
 ```
 cd ai-assisted-scraper/backend/chroma_service
-uvicorn main:app --host 0.0.0.0 --port 8001
+python -m uvicorn main:app --host 0.0.0.0 --port 8001
 ```
 - Runs on [http://localhost:8001](http://localhost:8001)
 
 ### 4. RL Backend (Flask + Stable Baselines3)
-Install dependencies:
+Install dependencies: (preferrably in a virtual environment)
 ```
 pip install flask flask_cors stable-baselines3 gym numpy
 ```
