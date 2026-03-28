@@ -30,9 +30,10 @@ npm install
 npm start
 ```
 - Runs on [http://localhost:5000](http://localhost:5000) by default
-- Requires a `.env` file with your Groq API key:
+- Requires a `.env` file with at least:
   ```
-  Groq_API_KEY=your_google_Groq_api_key
+  GROQ_API_KEY=your_groq_api_key
+  VERSION_API_BASE=http://localhost:8001
   ```
 
 ### 3. ChromaDB FastAPI Service (Python)
@@ -65,7 +66,7 @@ python rl_backend.py
 - Ensure all services are running for full functionality.
 - Python dependencies for FastAPI and RL backend can be installed in the same environment.
 - The backend requires a valid Groq API key for AI features.
-- ChromaDB will store versioned content in-memory by default.
+- In Docker Compose, ChromaDB data is persisted via a named volume.
 
 ---
 

@@ -297,69 +297,14 @@ app.post('/summarize', async (req, res) => {
   }
 });
 
-// ChromaDB FastAPI service base URL
-const CHROMA_API = 'http://localhost:8000';
-const VERSIONS_COLLECTION = 'versions2';
-let versionsCollectionId = null;
-
-// Helper to get the collection ID (UUID) for 'versions'
-async function getVersionsCollectionId() {
-  if (versionsCollectionId) return versionsCollectionId;
-  const response = await axios.get(`${CHROMA_API}/api/v1/collections`);
-  console.log("ChromaDB collections response:", response.data);
-  let collections = response.data.collections;
-  if (!collections && Array.isArray(response.data)) {
-    collections = response.data;
-  }
-  if (!collections) throw new Error("No collections found in ChromaDB response");
-  const collection = collections.find(c => c.name === VERSIONS_COLLECTION);
-  if (!collection) throw new Error("Versions collection not found");
-  versionsCollectionId = collection.id;
-  return versionsCollectionId;
-}
-
-// Helper to delete the old versions collection if it exists
-async function deleteOldVersionsCollection() {
-  const response = await axios.get(`${CHROMA_API}/api/v1/collections`);
-  let collections = response.data.collections;
-  if (!collections && Array.isArray(response.data)) {
-    collections = response.data;
-  }
-  if (!collections) return;
-  const collection = collections.find(c => c.name === VERSIONS_COLLECTION);
-  if (collection) {
-    await axios.delete(`${CHROMA_API}/api/v1/collections/${collection.id}`);
-    versionsCollectionId = null;
-    console.log(`Deleted old '${VERSIONS_COLLECTION}' collection.`);
-  }
-}
-
-// Update ensureVersionsCollection to delete old collection before creating new one
-async function ensureVersionsCollection() {
-  const response = await axios.get(`${CHROMA_API}/api/v1/collections`);
-  let collections = response.data.collections;
-  if (!collections && Array.isArray(response.data)) {
-    collections = response.data;
-  }
-  const collection = collections.find(c => c.name === VERSIONS_COLLECTION);
-  if (!collection) {
-    // Create the collection if it doesn't exist
-    await axios.post(`${CHROMA_API}/api/v1/collections`, {
-      name: VERSIONS_COLLECTION,
-      metadata: { description: "Version history for content" },
-      type: "document"
-    });
-    versionsCollectionId = null; // Reset cache
-    console.log(`Created '${VERSIONS_COLLECTION}' collection.`);
-  }
-}
-
-const CHROMA_PY_API = 'http://localhost:8001';
+// Version service base URL (FastAPI wrapper).
+// In Docker, set VERSION_API_BASE to http://chromadb:8001.
+const VERSION_API_BASE = process.env.VERSION_API_BASE || 'http://localhost:8001';
 
 // Proxy: Add version using Python FastAPI service
 app.post('/version', async (req, res) => {
   try {
-    const response = await axios.post(`${CHROMA_PY_API}/version`, req.body);
+    const response = await axios.post(`${VERSION_API_BASE}/version`, req.body);
     res.json(response.data);
   } catch (err) {
     console.error("Error in /version:", err);
@@ -370,7 +315,7 @@ app.post('/version', async (req, res) => {
 // Proxy: List version history using Python FastAPI service
 app.get('/version/history', async (req, res) => {
   try {
-    const response = await axios.get(`${CHROMA_PY_API}/version/history`);
+    const response = await axios.get(`${VERSION_API_BASE}/version/history`);
     res.json(response.data);
   } catch (err) {
     console.error("Error in /version/history:", err);
@@ -382,7 +327,7 @@ app.get('/version/history', async (req, res) => {
 app.get('/version/:id', async (req, res) => {
   console.log('HIT /version/:id', req.params.id);
   try {
-    const response = await axios.get(`${CHROMA_API}/version/${req.params.id}`);
+    const response = await axios.get(`${VERSION_API_BASE}/version/${req.params.id}`);
     res.json(response.data);
   } catch (err) {
     res.status(500).json({ error: err.message, details: err.response?.data });
@@ -392,7 +337,7 @@ app.get('/version/:id', async (req, res) => {
 // Proxy: Restore version
 app.post('/version/restore/:id', async (req, res) => {
   try {
-    const response = await axios.post(`${CHROMA_API}/version/restore/${req.params.id}`);
+    const response = await axios.post(`${VERSION_API_BASE}/version/restore/${req.params.id}`);
     res.json(response.data);
   } catch (err) {
     res.status(500).json({ error: err.message, details: err.response?.data });

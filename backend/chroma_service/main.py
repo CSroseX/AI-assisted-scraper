@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List
 import chromadb
+import os
 import uuid
 import time
 import traceback
@@ -12,17 +13,9 @@ import traceback
 app = FastAPI()
 
 # ChromaDB setup
-client = chromadb.Client()
-# Always clear and recreate the collection on startup
-def clear_and_recreate_collection():
-    try:
-        client.delete_collection("chapter_versions")
-    except Exception as e:
-        print("Collection may not exist yet, skipping delete.")
-    global collection
-    collection = client.get_or_create_collection("chapter_versions")
-
-clear_and_recreate_collection()
+CHROMA_PERSIST_PATH = os.getenv("CHROMA_PERSIST_PATH", "/data/chroma")
+client = chromadb.PersistentClient(path=CHROMA_PERSIST_PATH)
+collection = client.get_or_create_collection("chapter_versions")
 
 class VersionIn(BaseModel):
     content: str
