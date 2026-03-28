@@ -15,7 +15,6 @@ function getDefaultSession(id) {
   };
 }
 
-// Add this function inside your App.js or a relevant component
 const scrapeUrl = async (url) => {
   try {
     const res = await fetch('http://localhost:5000/scrape', {
