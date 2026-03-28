@@ -5,7 +5,7 @@ AI-Assisted-scraper is a multi-service application that leverages AI to scrape, 
 
 ## Capabilities
 - Scrape web pages and extract main content and screenshots
-- Rewrite and simplify content using Gemini AI
+- Rewrite and simplify content using Groq AI
 - Contextual chat and AI-powered review of rewritten content
 - Version control for content using ChromaDB (FastAPI)
 - Reinforcement learning-based review and feedback (Flask RL backend)
@@ -30,9 +30,9 @@ npm install
 npm start
 ```
 - Runs on [http://localhost:5000](http://localhost:5000) by default
-- Requires a `.env` file with your Gemini API key:
+- Requires a `.env` file with your Groq API key:
   ```
-  GEMINI_API_KEY=your_google_gemini_api_key
+  Groq_API_KEY=your_google_Groq_api_key
   ```
 
 ### 3. ChromaDB FastAPI Service (Python)
@@ -64,7 +64,7 @@ python rl_backend.py
 ## Notes
 - Ensure all services are running for full functionality.
 - Python dependencies for FastAPI and RL backend can be installed in the same environment.
-- The backend requires a valid Gemini API key for AI features.
+- The backend requires a valid Groq API key for AI features.
 - ChromaDB will store versioned content in-memory by default.
 
 ---

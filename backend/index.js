@@ -88,7 +88,7 @@ async function callGroq(messages, temperature = 0.2) {
       {
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${process.env.GEMINI_API_KEY}`
+          Authorization: `Bearer ${process.env.GROQ_API_KEY}`
         }
       }
     );
@@ -118,18 +118,11 @@ function classifyIntentHeuristic(message = '') {
   return 'chat';
 }
 
-// Kept function name to avoid touching the rest of the code paths
-async function callGemini(prompt) {
-  return await callGroq([
-    { role: 'user', content: prompt }
-  ]);
-}
-
 // Extracted handler: spin content
 async function handleSpin(content, customPrompt = "Rewrite in modern English and simplify the tone.") {
   const clamped = clampTextForModel(content, 12000);
   const prompt = `${customPrompt}\n\n${clamped.text}`;
-  const spun = await callGemini(prompt);
+  const spun = await callGroq([{ role: 'user', content: prompt }])
   return { spun, metadata: { prompt: customPrompt, timestamp: Date.now(), truncated: clamped.truncated } };
 }
 
@@ -137,7 +130,7 @@ async function handleSpin(content, customPrompt = "Rewrite in modern English and
 async function handleReview(content) {
   const clamped = clampTextForModel(content, 12000);
   const reviewerPrompt = "You are an expert editor and reviewer. Refine and critique the following text for clarity, coherence, and style. Suggest improvements and rewrite as needed.\n\n" + clamped.text;
-  const reviewed = await callGemini(reviewerPrompt);
+  const reviewed = await callGroq([{ role: 'user', content: reviewerPrompt }]);
   return { reviewed, metadata: { truncated: clamped.truncated } };
 }
 
@@ -167,11 +160,11 @@ async function handleChat(content, userMessage, history = []) {
 async function handleSummarize(content) {
   const clamped = clampTextForModel(content, 12000);
   const summarizePrompt = "Summarize the following text concisely. Focus on key points and main ideas.\n\n" + clamped.text;
-  const summary = await callGemini(summarizePrompt);
+  const summary = await callGroq([{ role: 'user', content: summarizePrompt }]);
   return { summary, metadata: { truncated: clamped.truncated } };
 }
 
-// Intent classifier using Gemini
+// Intent classifier using Groq
 async function classifyIntent(message) {
   // Prefer cheap local heuristics to avoid an extra LLM call per /ask request.
   const heuristicIntent = classifyIntentHeuristic(message);
@@ -190,11 +183,11 @@ Respond with ONLY the single word label. No explanation. No punctuation.
 `.trim();
 
   try {
-    const raw = await callGemini(prompt);
+    const raw = await callGroq([{ role: 'user', content: prompt }])
     const classified = raw?.trim()?.toLowerCase();
     const valid = ['spin', 'chat', 'review', 'summarize'];
     if (!valid.includes(classified)) {
-      console.warn(`[classifyIntent] Unexpected Gemini output: "${classified}", falling back to chat`);
+      console.warn(`[classifyIntent] Unexpected Groq output: "${classified}", falling back to chat`);
       return 'chat';
     }
     return classified;
@@ -251,7 +244,7 @@ app.post('/spin', async (req, res) => {
   const { text, prompt = "Rewrite in modern English and simplify the tone." } = req.body;
   if (!text) return res.status(400).json({ error: 'No text provided' });
 
-  console.log("GEMINI API KEY:", process.env.GEMINI_API_KEY ? "Loaded" : "NOT LOADED");
+  console.log("GROQ API KEY:", process.env.GROQ_API_KEY ? "Loaded" : "NOT LOADED");
 
   try {
     const result = await handleSpin(text, prompt);
@@ -262,7 +255,7 @@ app.post('/spin', async (req, res) => {
   }
 });
 
-// Contextual chat endpoint for Gemini
+// Contextual chat endpoint for Groq
 app.post('/chat', async (req, res) => {
   const { context, history, userMessage } = req.body;
   if (!context || !userMessage) return res.status(400).json({ error: 'Missing context or user message' });
@@ -276,7 +269,7 @@ app.post('/chat', async (req, res) => {
   }
 });
 
-// AI Reviewer endpoint for Gemini
+// AI Reviewer endpoint for Groq
 app.post('/review', async (req, res) => {
   const { spunContent } = req.body;
   if (!spunContent) return res.status(400).json({ error: 'No spun content provided' });
@@ -290,7 +283,7 @@ app.post('/review', async (req, res) => {
   }
 });
 
-// Summarize endpoint for Gemini
+// Summarize endpoint for Groq
 app.post('/summarize', async (req, res) => {
   const { content } = req.body;
   if (!content) return res.status(400).json({ error: 'No content provided' });
