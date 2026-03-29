@@ -15,6 +15,58 @@ app.use('/screenshots', express.static(path.join(__dirname, 'screenshots')));
 
 const { chromium } = require('playwright');
 
+const HTTP_TIMEOUT_MS = Number(process.env.HTTP_TIMEOUT_MS || 20000);
+let sharedBrowser = null;
+let sharedBrowserPromise = null;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryableError(err) {
+  const status = err?.response?.status;
+  if (!status) return true;
+  return status === 408 || status === 429 || status >= 500;
+}
+
+async function withRetries(fn, { attempts = 2, baseDelayMs = 300 } = {}) {
+  let lastError;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err;
+      if (!isRetryableError(err) || i === attempts - 1) break;
+      await sleep(baseDelayMs * (i + 1));
+    }
+  }
+  throw lastError;
+}
+
+async function getSharedBrowser() {
+  if (sharedBrowser && sharedBrowser.isConnected()) {
+    return sharedBrowser;
+  }
+
+  if (sharedBrowserPromise) {
+    return sharedBrowserPromise;
+  }
+
+  sharedBrowserPromise = chromium.launch()
+    .then((browser) => {
+      sharedBrowser = browser;
+      browser.on('disconnected', () => {
+        sharedBrowser = null;
+      });
+      return browser;
+    })
+    .finally(() => {
+      sharedBrowserPromise = null;
+    });
+
+  return sharedBrowserPromise;
+}
+
 function clampTextForModel(text, maxChars = 12000) {
   const source = String(text || '');
   if (source.length <= maxChars) {
@@ -100,7 +152,7 @@ async function validateScrapeUrl(rawUrl) {
 }
 
 app.post('/scrape', async (req, res) => {
-    const { url } = req.body;
+  const { url, includeScreenshot = true } = req.body;
     if (!url) {
         return res.status(400).json({ error: 'No URL provided' });
     }
@@ -110,10 +162,11 @@ app.post('/scrape', async (req, res) => {
       return res.status(400).json({ error: urlCheck.reason });
     }
 
-    let browser;
+    let context;
     try {
-      browser = await chromium.launch();
-      const page = await browser.newPage();
+      const browser = await getSharedBrowser();
+      context = await browser.newContext();
+      const page = await context.newPage();
       await page.goto(urlCheck.parsedUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
 
       const content = await page.evaluate(() => {
@@ -122,15 +175,17 @@ app.post('/scrape', async (req, res) => {
           return main ? main.innerText : document.body.innerText;
       });
 
-      // Attempt screenshot, but do not fail scraping if screenshot times out.
+      // Attempt screenshot only when requested; do not fail scrape on image errors.
       let relativeScreenshotPath = null;
-      try {
-        const screenshotPath = path.join(__dirname, 'screenshots', `${Date.now()}.png`);
-        fs.mkdirSync(path.dirname(screenshotPath), { recursive: true });
-        await page.screenshot({ path: screenshotPath, fullPage: true, timeout: 10000 });
-        relativeScreenshotPath = 'screenshots/' + path.basename(screenshotPath);
-      } catch (shotErr) {
-        console.warn('Screenshot failed, continuing without image:', shotErr.message);
+      if (includeScreenshot) {
+        try {
+          const screenshotPath = path.join(__dirname, 'screenshots', `${Date.now()}.png`);
+          fs.mkdirSync(path.dirname(screenshotPath), { recursive: true });
+          await page.screenshot({ path: screenshotPath, fullPage: true, timeout: 10000 });
+          relativeScreenshotPath = 'screenshots/' + path.basename(screenshotPath);
+        } catch (shotErr) {
+          console.warn('Screenshot failed, continuing without image:', shotErr.message);
+        }
       }
 
       res.json({ content, screenshotPath: relativeScreenshotPath });
@@ -145,8 +200,8 @@ app.post('/scrape', async (req, res) => {
       console.error('Scrape API error:', err.message);
       return res.status(500).json({ error: err.message || 'Scrape failed' });
     } finally {
-      if (browser) {
-        await browser.close().catch(() => {});
+      if (context) {
+        await context.close().catch(() => {});
       }
     }
 });
@@ -157,7 +212,7 @@ const GROQ_MODEL = process.env.GROQ_MODEL || 'openai/gpt-oss-20b';
 // Shared LLM API call helper (Groq OpenAI-compatible endpoint)
 async function callGroq(messages, temperature = 0.2) {
   try {
-    const response = await axios.post(
+    const response = await withRetries(() => axios.post(
       `${GROQ_API_BASE}/chat/completions`,
       {
         model: GROQ_MODEL,
@@ -165,12 +220,13 @@ async function callGroq(messages, temperature = 0.2) {
         temperature
       },
       {
+        timeout: HTTP_TIMEOUT_MS,
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${process.env.GROQ_API_KEY}`
         }
       }
-    );
+    ), { attempts: 3 });
 
     return response.data?.choices?.[0]?.message?.content;
   } catch (err) {
@@ -306,7 +362,7 @@ app.post('/ask', async (req, res) => {
     console.warn('[/ask] Intent classification failed, falling back to chat:', err.message);
   }
 
-  console.log(`[/ask] intent=${intent} message="${String(message || '').slice(0, 120)}" content_chars=${String(content || '').length}`);
+  console.log(`[/ask] intent=${intent} content_chars=${String(content || '').length}`);
 
   try {
     const result = await routeToHandler(intent, content, message, history);
@@ -322,8 +378,6 @@ app.post('/ask', async (req, res) => {
 app.post('/spin', async (req, res) => {
   const { text, prompt = "Rewrite in modern English and simplify the tone." } = req.body;
   if (!text) return res.status(400).json({ error: 'No text provided' });
-
-  console.log("GROQ API KEY:", process.env.GROQ_API_KEY ? "Loaded" : "NOT LOADED");
 
   try {
     const result = await handleSpin(text, prompt);
@@ -383,30 +437,43 @@ const VERSION_API_BASE = process.env.VERSION_API_BASE || 'http://localhost:8001'
 // Proxy: Add version using Python FastAPI service
 app.post('/version', async (req, res) => {
   try {
-    const response = await axios.post(`${VERSION_API_BASE}/version`, req.body);
+    const response = await withRetries(
+      () => axios.post(`${VERSION_API_BASE}/version`, req.body, { timeout: HTTP_TIMEOUT_MS }),
+      { attempts: 2 }
+    );
     res.json(response.data);
   } catch (err) {
-    console.error("Error in /version:", err);
+    console.error("Error in /version:", err.message);
     res.status(500).json({ error: err.message || String(err) });
   }
 });
 
 // Proxy: List version history using Python FastAPI service
 app.get('/version/history', async (req, res) => {
+  const limit = Number(req.query.limit || 50);
+  const offset = Number(req.query.offset || 0);
   try {
-    const response = await axios.get(`${VERSION_API_BASE}/version/history`);
+    const response = await withRetries(
+      () => axios.get(`${VERSION_API_BASE}/version/history`, {
+        timeout: HTTP_TIMEOUT_MS,
+        params: { limit, offset }
+      }),
+      { attempts: 2 }
+    );
     res.json(response.data);
   } catch (err) {
-    console.error("Error in /version/history:", err);
+    console.error("Error in /version/history:", err.message);
     res.status(500).json({ error: err.message || String(err) });
   }
 });
 
 // Proxy: Get version by ID
 app.get('/version/:id', async (req, res) => {
-  console.log('HIT /version/:id', req.params.id);
   try {
-    const response = await axios.get(`${VERSION_API_BASE}/version/${req.params.id}`);
+    const response = await withRetries(
+      () => axios.get(`${VERSION_API_BASE}/version/${req.params.id}`, { timeout: HTTP_TIMEOUT_MS }),
+      { attempts: 2 }
+    );
     res.json(response.data);
   } catch (err) {
     res.status(500).json({ error: err.message, details: err.response?.data });
@@ -416,12 +483,38 @@ app.get('/version/:id', async (req, res) => {
 // Proxy: Restore version
 app.post('/version/restore/:id', async (req, res) => {
   try {
-    const response = await axios.post(`${VERSION_API_BASE}/version/restore/${req.params.id}`);
+    const response = await withRetries(
+      () => axios.post(`${VERSION_API_BASE}/version/restore/${req.params.id}`, {}, { timeout: HTTP_TIMEOUT_MS }),
+      { attempts: 2 }
+    );
     res.json(response.data);
   } catch (err) {
     res.status(500).json({ error: err.message, details: err.response?.data });
   }
 });
 
+app.get('/health', (_req, res) => {
+  res.json({ status: 'ok' });
+});
 
-app.listen(5000, () => console.log('Server is running on port 5000'));
+const PORT = Number(process.env.PORT || 5000);
+if (require.main === module) {
+  app.listen(PORT, () => console.log(`Server is running on port ${PORT}`));
+
+  const shutdown = async () => {
+    if (sharedBrowser && sharedBrowser.isConnected()) {
+      await sharedBrowser.close().catch(() => {});
+    }
+    process.exit(0);
+  };
+
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+}
+
+module.exports = {
+  app,
+  validateScrapeUrl,
+  isPrivateIPv4,
+  isPrivateIPv6
+};
