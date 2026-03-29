@@ -1,7 +1,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { isPrivateIPv4, isPrivateIPv6, validateScrapeUrl } = require('./index');
+const {
+  isPrivateIPv4,
+  isPrivateIPv6,
+  validateScrapeUrl,
+  parseAllowedOrigins
+} = require('./index');
 
 test('isPrivateIPv4 detects private/loopback ranges', () => {
   assert.equal(isPrivateIPv4('10.0.0.1'), true);
@@ -25,4 +30,14 @@ test('validateScrapeUrl blocks localhost and non-http protocols', async () => {
 
   const blockedProto = await validateScrapeUrl('file:///etc/passwd');
   assert.equal(blockedProto.ok, false);
+});
+
+test('validateScrapeUrl blocks URLs with embedded credentials', async () => {
+  const blocked = await validateScrapeUrl('https://user:pass@example.com');
+  assert.equal(blocked.ok, false);
+});
+
+test('parseAllowedOrigins parses comma-separated origins and defaults safely', () => {
+  assert.deepEqual(parseAllowedOrigins('https://a.com, https://b.com'), ['https://a.com', 'https://b.com']);
+  assert.deepEqual(parseAllowedOrigins(''), ['http://localhost:3000']);
 });

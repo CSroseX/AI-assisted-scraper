@@ -1,13 +1,11 @@
-FROM node:22-bookworm-slim
+FROM cgr.dev/chainguard/node:latest-dev
 WORKDIR /app
-
-RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 
 # Copy dependency files first
 COPY package*.json ./
 
-# Install dependencies
-RUN npm install
+# Install dependencies with lockfile fidelity for reproducible builds.
+RUN npm ci
 
 # Copy the rest of the app
 COPY public ./public
