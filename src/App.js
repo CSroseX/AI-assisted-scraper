@@ -83,7 +83,7 @@ const saveVersion = async (content, parent_version, editor = "user") => {
 // Fetch version history from backend
 const fetchVersionHistory = async () => {
   try {
-    const res = await fetch(apiUrl('/version/history'));
+    const res = await fetch(apiUrl('/version/history?limit=100&offset=0'));
     if (!res.ok) throw new Error('Failed to fetch version history');
     const data = await res.json();
     // Transform ChromaDB raw result to array of version objects
