@@ -34,6 +34,8 @@ npm start
   ```
   GROQ_API_KEY=your_groq_api_key
   VERSION_API_BASE=http://localhost:8001
+  # Optional
+  GROQ_MODEL=openai/gpt-oss-20b
   ```
 
 ### 3. ChromaDB FastAPI Service (Python)
@@ -48,10 +50,10 @@ python -m uvicorn main:app --host 0.0.0.0 --port 8001
 ```
 - Runs on [http://localhost:8001](http://localhost:8001)
 
-### 4. RL Backend (Flask + Stable Baselines3)
-Install dependencies: (preferrably in a virtual environment)
+### 4. RL Backend (Flask Policy Feedback Service)
+Install dependencies: (preferably in a virtual environment)
 ```
-pip install flask flask_cors stable-baselines3 gym numpy
+pip install flask flask_cors numpy
 ```
 Run the service:
 ```
@@ -66,6 +68,7 @@ python rl_backend.py
 - Ensure all services are running for full functionality.
 - Python dependencies for FastAPI and RL backend can be installed in the same environment.
 - The backend requires a valid Groq API key for AI features.
+- In Docker Compose, backend should use `VERSION_API_BASE=http://chromadb:8001`.
 - In Docker Compose, ChromaDB data is persisted via a named volume.
 
 ---

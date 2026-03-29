@@ -5,6 +5,12 @@ import UrlModal from './UrlModal';
 import './App.css';
 import { FaBell } from 'react-icons/fa';
 
+const API_BASE = process.env.REACT_APP_API_BASE || 'http://localhost:5000';
+const RL_BASE = process.env.REACT_APP_RL_BASE || 'http://localhost:5050';
+
+const apiUrl = (path) => `${API_BASE}${path}`;
+const rlUrl = (path) => `${RL_BASE}${path}`;
+
 function getDefaultSession(id) {
   return {
     id,
@@ -17,7 +23,7 @@ function getDefaultSession(id) {
 
 const scrapeUrl = async (url) => {
   try {
-    const res = await fetch('http://localhost:5000/scrape', {
+    const res = await fetch(apiUrl('/scrape'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url }),
@@ -44,7 +50,7 @@ const scrapeUrl = async (url) => {
 
 const spinText = async (text, prompt = "Rewrite in modern English and simplify the tone. Remove any special characters and numbers. Re-write the content in a way that is easy to understand and follow. Do not format the content in any way.") => {
   try {
-    const res = await fetch('http://localhost:5000/spin', {
+    const res = await fetch(apiUrl('/spin'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text, prompt }),
@@ -61,7 +67,7 @@ const spinText = async (text, prompt = "Rewrite in modern English and simplify t
 // Add version to ChromaDB via backend
 const saveVersion = async (content, parent_version, editor = "user") => {
   try {
-    const res = await fetch('http://localhost:5000/version', {
+    const res = await fetch(apiUrl('/version'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content, parent_version, editor }),
@@ -77,7 +83,7 @@ const saveVersion = async (content, parent_version, editor = "user") => {
 // Fetch version history from backend
 const fetchVersionHistory = async () => {
   try {
-    const res = await fetch('http://localhost:5000/version/history');
+    const res = await fetch(apiUrl('/version/history'));
     if (!res.ok) throw new Error('Failed to fetch version history');
     const data = await res.json();
     // Transform ChromaDB raw result to array of version objects
@@ -99,7 +105,7 @@ const fetchVersionHistory = async () => {
 // Helper to call /ask endpoint and return route-aware response text.
 const askWithRouting = async (content, history, message) => {
   try {
-    const res = await fetch('http://localhost:5000/ask', {
+    const res = await fetch(apiUrl('/ask'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content, history, message }),
@@ -139,7 +145,7 @@ const askWithRouting = async (content, history, message) => {
 // Helper to call RL-based /review endpoint for AI Reviewer
 const reviewContent = async (spunContent) => {
   try {
-    const res = await fetch('http://localhost:5050/review', {
+    const res = await fetch(rlUrl('/review'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ spunContent }),
@@ -516,7 +522,7 @@ function App() {
         return { ...session, messages: msgs };
       }));
       // Send feedback as reward to RL backend (always 1 for demo)
-      await fetch('http://localhost:5050/feedback', {
+      await fetch(rlUrl('/feedback'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ reward: 1, review_id: lastMsg.reviewId || currentReviewId }),
@@ -632,7 +638,7 @@ function App() {
             setTimeout(() => setThumbAnim(null), 400);
             setTimeout(() => setNotification(null), 2000);
             setFeedbackSubmitted(true);
-            await fetch('http://localhost:5050/feedback', {
+            await fetch(rlUrl('/feedback'), {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ reward: 1, review_id: currentReviewId }),
@@ -645,7 +651,7 @@ function App() {
             setTimeout(() => setThumbAnim(null), 400);
             setTimeout(() => setNotification(null), 2000);
             setFeedbackSubmitted(true);
-            await fetch('http://localhost:5050/feedback', {
+            await fetch(rlUrl('/feedback'), {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ reward: -1, review_id: currentReviewId }),
@@ -701,7 +707,7 @@ function App() {
                   aria-label="Close"
                 >×</button>
                 <img
-                  src={`http://localhost:5000/${imgPath}`}
+                  src={`${API_BASE}/${imgPath}`}
                   alt="Screenshot"
                   style={{ maxWidth: '80vw', maxHeight: '80vh', display: 'block', margin: '0 auto', border: '1px solid #ccc', borderRadius: 8 }}
                   onError={e => { e.target.style.display = 'none'; alert('Failed to load screenshot image! Check the path and backend.'); }}
