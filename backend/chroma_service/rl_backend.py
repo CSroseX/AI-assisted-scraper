@@ -6,7 +6,15 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 
 app = Flask(__name__)
-CORS(app)
+
+
+def parse_allowed_origins(raw: str) -> list[str]:
+    values = [v.strip() for v in str(raw or "").split(",") if v.strip()]
+    return values if values else ["http://localhost:3000"]
+
+
+allowed_origins = parse_allowed_origins(__import__("os").getenv("CORS_ALLOWED_ORIGINS", ""))
+CORS(app, resources={r"/*": {"origins": allowed_origins}})
 
 # Lightweight online preference learner:
 # action 0 -> concise review style

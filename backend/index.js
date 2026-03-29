@@ -9,7 +9,28 @@ const axios = require('axios');
 const dns = require('dns').promises;
 const net = require('net');
 
-app.use(cors());
+function parseAllowedOrigins(raw = '') {
+  const parsed = String(raw)
+    .split(',')
+    .map((v) => v.trim())
+    .filter(Boolean);
+  return parsed.length ? parsed : ['http://localhost:3000'];
+}
+
+const allowedOrigins = parseAllowedOrigins(process.env.CORS_ALLOWED_ORIGINS);
+const corsOptions = {
+  origin(origin, callback) {
+    // Allow non-browser clients (no Origin header) such as health checks and curl.
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error('Not allowed by CORS'));
+  },
+  methods: ['GET', 'POST', 'OPTIONS'],
+  credentials: false
+};
+
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 app.use(express.json());
 app.use('/screenshots', express.static(path.join(__dirname, 'screenshots')));
 
@@ -516,5 +537,6 @@ module.exports = {
   app,
   validateScrapeUrl,
   isPrivateIPv4,
-  isPrivateIPv6
+  isPrivateIPv6,
+  parseAllowedOrigins
 };

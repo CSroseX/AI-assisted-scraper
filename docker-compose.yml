@@ -17,6 +17,7 @@ services:
       - ./backend/.env
     environment:
       - VERSION_API_BASE=http://chromadb:8001
+      - CORS_ALLOWED_ORIGINS=http://localhost:3000
     depends_on:
       chromadb:
         condition: service_healthy
@@ -50,6 +51,8 @@ services:
       dockerfile: dockerfile.rl
     ports:
       - "5050:5050"
+    environment:
+      - CORS_ALLOWED_ORIGINS=http://localhost:3000
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5050/health')"]
       interval: 15s
