@@ -1,5 +1,5 @@
 # ai-assisted-scraper/backend/chroma_service/Dockerfile
-FROM python:3.10
+FROM python:3.12-slim-bookworm
 WORKDIR /app
 
 # Copy service-specific requirements first (better caching)
