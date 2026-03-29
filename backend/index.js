@@ -6,6 +6,8 @@ require('dotenv').config();
 const path = require('path');
 const fs = require('fs');
 const axios = require('axios');
+const dns = require('dns').promises;
+const net = require('net');
 
 app.use(cors());
 app.use(express.json());
@@ -25,17 +27,94 @@ function clampTextForModel(text, maxChars = 12000) {
   };
 }
 
+function isPrivateIPv4(ip) {
+  const parts = ip.split('.').map(Number);
+  if (parts.length !== 4 || parts.some((n) => Number.isNaN(n))) return true;
+
+  const [a, b] = parts;
+  if (a === 10) return true;
+  if (a === 127) return true;
+  if (a === 0) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  return false;
+}
+
+function isPrivateIPv6(ip) {
+  const normalized = String(ip || '').toLowerCase();
+  return (
+    normalized === '::1' ||
+    normalized === '::' ||
+    normalized.startsWith('fc') ||
+    normalized.startsWith('fd') ||
+    normalized.startsWith('fe80:')
+  );
+}
+
+async function validateScrapeUrl(rawUrl) {
+  let parsed;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return { ok: false, reason: 'Invalid URL format' };
+  }
+
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    return { ok: false, reason: 'Only http and https URLs are allowed' };
+  }
+
+  if (parsed.username || parsed.password) {
+    return { ok: false, reason: 'URLs with embedded credentials are not allowed' };
+  }
+
+  const hostname = parsed.hostname.toLowerCase();
+  const blockedHostnames = new Set(['localhost', '127.0.0.1', '::1', '0.0.0.0']);
+  if (blockedHostnames.has(hostname) || hostname.endsWith('.local')) {
+    return { ok: false, reason: 'Local/internal hostnames are not allowed' };
+  }
+
+  try {
+    const records = await dns.lookup(hostname, { all: true });
+    if (!records.length) {
+      return { ok: false, reason: 'Hostname resolution failed' };
+    }
+
+    for (const rec of records) {
+      const ip = rec.address;
+      const family = net.isIP(ip);
+
+      if (
+        (family === 4 && isPrivateIPv4(ip)) ||
+        (family === 6 && isPrivateIPv6(ip)) ||
+        family === 0
+      ) {
+        return { ok: false, reason: 'Resolved IP is private or loopback and is blocked' };
+      }
+    }
+  } catch {
+    return { ok: false, reason: 'Hostname resolution failed' };
+  }
+
+  return { ok: true, parsedUrl: parsed.toString() };
+}
+
 app.post('/scrape', async (req, res) => {
     const { url } = req.body;
     if (!url) {
         return res.status(400).json({ error: 'No URL provided' });
     }
 
+    const urlCheck = await validateScrapeUrl(url);
+    if (!urlCheck.ok) {
+      return res.status(400).json({ error: urlCheck.reason });
+    }
+
     let browser;
     try {
       browser = await chromium.launch();
       const page = await browser.newPage();
-      await page.goto(url, { waitUntil: 'domcontentloaded' });
+      await page.goto(urlCheck.parsedUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
 
       const content = await page.evaluate(() => {
           // Try to get main content, fallback to body text
