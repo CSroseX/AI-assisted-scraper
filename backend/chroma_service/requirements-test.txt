@@ -1,0 +1,6 @@
+# Test/lint dependencies for the Python services (used by CI).
+-r requirements-fastapi.txt
+-r requirements-rl.txt
+pytest==8.4.1
+httpx==0.28.1
+ruff==0.12.5

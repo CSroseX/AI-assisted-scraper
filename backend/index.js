@@ -630,5 +630,16 @@ module.exports = {
   isPrivateIPv6,
   parseAllowedOrigins,
   cleanupScreenshots,
-  sanitizeHistory
+  sanitizeHistory,
+  // Exposed for unit tests
+  clampTextForModel,
+  withRetries,
+  callGroq,
+  classifyIntentHeuristic,
+  classifyIntent,
+  routeToHandler,
+  handleSpin,
+  handleReview,
+  handleChat,
+  handleSummarize
 };
