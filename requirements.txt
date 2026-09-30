@@ -1,3 +1,0 @@
-# Aggregate requirements for local development.
--r backend/chroma_service/requirements-fastapi.txt
--r backend/chroma_service/requirements-rl.txt
