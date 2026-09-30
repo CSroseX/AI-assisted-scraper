@@ -3,3 +3,6 @@
 // expect(element).toHaveTextContent(/react/i)
 // learn more: https://github.com/testing-library/jest-dom
 import '@testing-library/jest-dom';
+
+// jsdom does not implement scrollIntoView, which Chat uses to follow new messages.
+window.HTMLElement.prototype.scrollIntoView = function scrollIntoView() {};

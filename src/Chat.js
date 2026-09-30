@@ -1,44 +1,18 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { normalizeAssistantMarkdown } from './utils/markdown';
+import { findLastIndexByType } from './utils/messages';
 import './Chat.css';
 
-function normalizeAssistantMarkdown(content) {
-  const text = String(content || '');
-
-  // Handle model outputs where markdown table rows are flattened into one line,
-  // e.g. "| h1 | h2 | |---|---| | r1c1 | r1c2 |".
-  const looksLikeFlattenedTable = /\|\s*[-:]{3,}[-:|\s]*\|/.test(text) && !/\n\|/.test(text);
-  if (!looksLikeFlattenedTable) return text;
-
-  return text
-    .replace(/\|\s+\|/g, '|\n|')
-    .replace(/\n\s+/g, '\n')
-    .trim();
-}
-
-function Chat({ messages, onSendMessage, spunMsgIndex, showEditButton, onEditSpun, thumbAnim, onThumbUp, onThumbDown, feedbackSubmitted }) {
-  const [input, setInput] = useState('');
+function Chat({ messages, showEditButton, onEditSpun, thumbAnim, onThumbUp, onThumbDown, feedbackSubmitted }) {
   const messagesEndRef = useRef(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const handleSend = (e) => {
-    e.preventDefault();
-    if (input.trim()) {
-      onSendMessage(input);
-      setInput('');
-    }
-  };
-
-  const lastSpunContentIdx = (() => {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].type === 'spunContent') return i;
-    }
-    return -1;
-  })();
+  const lastSpunContentIdx = findLastIndexByType(messages, 'spunContent');
   return (
     <div className="chat-container">
       <div className="messages">
@@ -94,7 +68,6 @@ function Chat({ messages, onSendMessage, spunMsgIndex, showEditButton, onEditSpu
         ))}
         <div ref={messagesEndRef} />
       </div>
-      {/* Removed input-area and form for user message input */}
     </div>
   );
 }

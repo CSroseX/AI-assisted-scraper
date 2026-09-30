@@ -1,14 +1,6 @@
 import React, { useState } from 'react';
+import { isValidUrl } from './utils/url';
 import './UrlModal.css';
-
-function isValidUrl(str) {
-  try {
-    const url = new URL(str);
-    return url.protocol === 'http:' || url.protocol === 'https:';
-  } catch (e) {
-    return false;
-  }
-}
 
 function UrlModal({ onSubmit }) {
   const [input, setInput] = useState('');
