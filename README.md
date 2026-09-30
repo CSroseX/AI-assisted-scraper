@@ -20,7 +20,7 @@ Requirements: Docker and Docker Compose installed.
 
 ```bash
 # Set up environment
-cp .env.example .env  # Create and configure .env with GROQ_API_KEY, etc.
+cp backend/.env.example backend/.env  # then set GROQ_API_KEY and CLEAR_API_TOKEN
 
 # Start all services
 docker-compose up --build
@@ -90,8 +90,9 @@ cd backend
 npm test
 ```
 Tests include:
-- SSRF protection (private IP and localhost blocking)
+- SSRF protection (private/reserved IP ranges, IPv4-mapped IPv6, redirect and DNS-rebinding defence via the egress proxy)
 - URL credential blocking
+- Request validation, body-size limits and rate limiting
 - CORS origin parsing
 
 ### Run Frontend Tests
@@ -113,6 +114,14 @@ Component rendering and critical path validations.
 - `VERSION_API_BASE`: Version service URL (default: `http://localhost:8001`, use `http://chromadb:8001` in Docker)
 - `CLEAR_API_TOKEN`: Token for `/version/clear` endpoint (required to clear version history)
 - `HTTP_TIMEOUT_MS`: HTTP request timeout in ms (default: 20000)
+- `JSON_BODY_LIMIT`: Max JSON request body (default: `1mb`)
+- `RATE_LIMIT_WINDOW_MS` / `RATE_LIMIT_MAX`: General per-IP rate limit (default: 60 requests per 60s)
+- `SCRAPE_RATE_LIMIT_MAX`: Per-IP limit for `/scrape` per window (default: 10)
+- `MAX_CONCURRENT_SCRAPES`: Simultaneous browser scrapes before returning 503 (default: 3)
+- `SCREENSHOT_TTL_MS`: How long screenshots are kept before cleanup (default: 3600000)
+- `TRUST_PROXY`: Set (e.g. `1`) when running behind a reverse proxy so rate limits use the real client IP
+
+See `backend/.env.example` for a ready-to-copy template.
 
 ---
 
@@ -120,7 +129,7 @@ Component rendering and critical path validations.
 
 - **Docker Compose**: Services start with health checks; frontend waits for backend readiness
 - **Chrome Binary**: First run may require `npm exec playwright install chromium` in backend folder
-- **Security**: SSRF protection blocks non-http protocols, localhost, and private IP ranges
+- **Security**: The scraper's browser only reaches the network through a local egress-filtering proxy that resolves each hostname, refuses private/loopback/link-local/reserved addresses (including via redirects, iframes and subresources), and connects to the vetted IP itself (no DNS-rebinding window). Non-http schemes and embedded credentials are rejected up front. Still deploy the backend without access to internal networks or cloud metadata endpoints as defence in depth.
 - **CORS**: Backend requires explicit origin allowlist; wildcard origins are blocked
 - **Data Persistence**: ChromaDB data is persisted via `chroma_data` volume in Docker Compose
 
