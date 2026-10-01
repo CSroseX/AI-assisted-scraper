@@ -5,6 +5,10 @@ on:
     branches: [main, master, dev]
   pull_request:
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   backend:
     name: backend (node)

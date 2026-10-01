@@ -78,6 +78,7 @@ function App() {
         {workflow.loading && <div style={{ padding: 20 }}>Loading and scraping URL...</div>}
         <Chat
           messages={chatMessages}
+          spunIndex={spunIndex}
           showEditButton={!editor.editing && !!spunMsg}
           onEditSpun={editor.start}
           thumbAnim={feedback.thumbAnim}

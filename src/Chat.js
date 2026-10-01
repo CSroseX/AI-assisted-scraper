@@ -2,17 +2,15 @@ import React, { useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { normalizeAssistantMarkdown } from './utils/markdown';
-import { findLastIndexByType } from './utils/messages';
 import './Chat.css';
 
-function Chat({ messages, showEditButton, onEditSpun, thumbAnim, onThumbUp, onThumbDown, feedbackSubmitted }) {
+function Chat({ messages, spunIndex, showEditButton, onEditSpun, thumbAnim, onThumbUp, onThumbDown, feedbackSubmitted }) {
   const messagesEndRef = useRef(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const lastSpunContentIdx = findLastIndexByType(messages, 'spunContent');
   return (
     <div className="chat-container">
       <div className="messages">
@@ -26,7 +24,7 @@ function Chat({ messages, showEditButton, onEditSpun, thumbAnim, onThumbUp, onTh
               <span>{msg.content}</span>
             )}
             {/* Edit and thumbs for only the last spun content message */}
-            {showEditButton && idx === lastSpunContentIdx && (
+            {showEditButton && idx === spunIndex && (
               <div style={{ position: 'relative', width: '100%', height: 0, display: 'flex', alignItems: 'center', gap: 12, marginTop: 8 }}>
                 <button
                   onClick={onEditSpun}

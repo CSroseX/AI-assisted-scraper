@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 
-export function createSession(id) {
+function createSession(id) {
   return { id, title: '', url: '', messages: [], awaitingUrl: true };
 }
 

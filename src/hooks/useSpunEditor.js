@@ -10,10 +10,7 @@ export function useSpunEditor(spunMsg) {
     setEditing(true);
   }, [spunMsg]);
 
-  const stop = useCallback(() => {
-    setEditing(false);
-    setValue('');
-  }, []);
+  const stop = useCallback(() => setEditing(false), []);
 
   return { editing, value, setValue, start, stop };
 }
