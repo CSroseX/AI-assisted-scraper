@@ -67,7 +67,8 @@ def render_review(content, features, action):
         "Detailed review:\n"
         f"1. Structure: The text has {features['sentence_count']} sentences and {features['word_count']} words. "
         "Consider clearer paragraph boundaries for better flow.\n"
-        f"2. Clarity: Average sentence length is {features['avg_sentence_len']} words; split long sentences where possible.\n"
+        f"2. Clarity: Average sentence length is {features['avg_sentence_len']} words; "
+        "split long sentences where possible.\n"
         f"3. Focus: Dominant terms are {keyword_text}. Remove redundancy around repeated terms.\n"
         "4. Revision tip: Start each paragraph with a topic sentence, then support it with one concrete detail."
     )

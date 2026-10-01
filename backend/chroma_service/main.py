@@ -1,9 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi import Request
-from fastapi.responses import JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional
 import chromadb
 import os
 import uuid

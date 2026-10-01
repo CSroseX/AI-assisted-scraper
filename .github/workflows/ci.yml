@@ -2,11 +2,16 @@ name: CI
 
 on:
   push:
-    branches: [main, dev]
+    branches: [main, master, dev]
   pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   backend:
+    name: backend (node)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -22,3 +27,34 @@ jobs:
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
       - run: npm test
+
+  python:
+    name: services (python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/chroma_service/requirements*.txt
+      - run: pip install -r backend/chroma_service/requirements-test.txt
+      - run: ruff check backend/chroma_service
+      - run: python -m pytest -q
+        working-directory: backend/chroma_service
+
+  frontend:
+    name: frontend (react)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run test:ci
+      - run: npm run build
+        env:
+          CI: "true"

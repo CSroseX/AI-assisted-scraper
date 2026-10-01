@@ -1,0 +1,5 @@
+line-length = 120
+extend-exclude = ["backend/chroma_service/venv*"]
+
+[lint]
+select = ["E", "F"]

@@ -97,9 +97,25 @@ Tests include:
 
 ### Run Frontend Tests
 ```bash
-npm test -- --watchAll=false
+npm run lint
+npm run test:ci
 ```
-Component rendering and critical path validations.
+Unit tests for the API client, hooks and utilities, plus an integration test that drives the full scrape → write → review → chat flow with the network mocked.
+
+### Run Python Service Tests
+```bash
+pip install -r backend/chroma_service/requirements-test.txt
+ruff check backend/chroma_service
+cd backend/chroma_service && python -m pytest
+```
+Covers the version service (FastAPI + ChromaDB) and the RL review service (Flask).
+
+CI (`.github/workflows/ci.yml`) runs all three suites plus lint and a production frontend build.
+
+### Dependency files
+- `package.json` (repo root): the React frontend.
+- `backend/package.json`: the Node/Express backend.
+- `backend/requirements.txt`: installs both Python services for local development. Each service also has its own pinned file in `backend/chroma_service/` (`requirements-fastapi.txt`, `requirements-rl.txt`) used by its Docker image; `requirements-test.txt` adds test/lint tools.
 
 ---
 
