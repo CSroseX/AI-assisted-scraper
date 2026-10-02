@@ -9,6 +9,9 @@ PROJECT_FULL_DOCUMENTATION.md
 # backend runtime output
 /backend/screenshots
 /backend/.env
+/backend/data
+*.db
+*.db-journal
 
 # misc
 .DS_Store
@@ -22,9 +25,3 @@ yarn-debug.log*
 yarn-error.log*
 coverage/
 
-# python
-__pycache__/
-*.pyc
-venv/
-venv*/
-backend/chroma_service/venv311/

@@ -1,4 +1,4 @@
-import { apiUrl, rlUrl } from '../config';
+import { apiUrl } from '../config';
 
 const DEFAULT_SPIN_PROMPT =
   'Rewrite in modern English and simplify the tone. Remove any special characters and numbers. ' +
@@ -24,24 +24,12 @@ async function postJson(url, body, fallback) {
   return res.json();
 }
 
-async function getJson(url, fallback) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(await errorMessage(res, fallback));
-  return res.json();
-}
-
 // All functions below throw on failure; callers decide how to surface errors.
 
 export const scrapeUrl = (url) => postJson(apiUrl('/scrape'), { url }, 'Scraping failed');
 
 export const spinText = (text, prompt = DEFAULT_SPIN_PROMPT) =>
   postJson(apiUrl('/spin'), { text, prompt }, 'Spin failed');
-
-export const saveVersion = (content, parent_version, editor = 'user') =>
-  postJson(apiUrl('/version'), { content, parent_version, editor }, 'Save version failed');
-
-export const fetchVersionHistory = () =>
-  getJson(apiUrl('/version/history?limit=100&offset=0'), 'Failed to fetch version history');
 
 // Calls /ask and returns route-aware response text.
 export async function askWithRouting(content, history, message) {
@@ -58,12 +46,3 @@ export async function askWithRouting(content, history, message) {
   const text = fieldByRoute[routedTo] || fallbackText || 'AI failed to reply.';
   return { text, routedTo };
 }
-
-// RL-based reviewer.
-export async function reviewContent(spunContent) {
-  const data = await postJson(rlUrl('/review'), { spunContent }, 'Review failed');
-  return { reviewed: data.reviewed, reviewId: data.review_id, action: data.action };
-}
-
-export const sendFeedback = (reward, reviewId) =>
-  postJson(rlUrl('/feedback'), { reward, review_id: reviewId }, 'Feedback failed');

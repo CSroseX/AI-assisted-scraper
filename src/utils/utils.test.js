@@ -3,9 +3,7 @@ import { normalizeAssistantMarkdown } from './markdown';
 import {
   findLastIndexByType,
   normalizeScreenshotPath,
-  replaceTrailingLoader,
-  reviewedMessage,
-  toVersionList
+  replaceTrailingLoader
 } from './messages';
 
 describe('isValidUrl', () => {
@@ -53,27 +51,6 @@ describe('message helpers', () => {
     expect(replaceTrailingLoader(msgs, 'Thinking...', { content: 'done' })).toEqual([{ content: 'hi' }, { content: 'done' }]);
     expect(replaceTrailingLoader(msgs, 'other', { content: 'done' })).toBe(msgs);
     expect(replaceTrailingLoader([], 'x', { content: 'done' })).toEqual([]);
-  });
-
-  test('reviewedMessage builds an assistant reviewedContent message', () => {
-    expect(reviewedMessage({ reviewed: 'ok', reviewId: 'r1', action: 1 })).toEqual({
-      role: 'assistant', content: 'ok', type: 'reviewedContent', reviewId: 'r1', action: 1
-    });
-  });
-
-  test('toVersionList maps the raw Chroma result and tolerates gaps', () => {
-    expect(toVersionList(null)).toEqual([]);
-    expect(toVersionList({ ids: ['a'] })).toEqual([]);
-    expect(
-      toVersionList({
-        ids: ['a', 'b'],
-        documents: ['one', null],
-        metadatas: [{ parent_version: 'p', timestamp: 5, editor: 'ai-writer' }, {}]
-      })
-    ).toEqual([
-      { id: 'a', parent_version: 'p', content: 'one', timestamp: 5, editor: 'ai-writer' },
-      { id: 'b', parent_version: '', content: '', timestamp: 0, editor: 'user' }
-    ]);
   });
 
   test('normalizeScreenshotPath handles Windows separators and leading dots', () => {

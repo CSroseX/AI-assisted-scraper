@@ -14,13 +14,10 @@ services:
     env_file:
       - ./backend/.env
     environment:
-      - VERSION_API_BASE=http://chromadb:8001
       - CORS_ALLOWED_ORIGINS=http://localhost:3000
-    depends_on:
-      chromadb:
-        condition: service_healthy
-      rl_backend:
-        condition: service_healthy
+      - DB_PATH=/data/watchdog.db
+    volumes:
+      - watchdog_data:/data
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://localhost:5000/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
       interval: 15s
@@ -28,35 +25,5 @@ services:
       retries: 5
       start_period: 20s
 
-  chromadb:
-    build:
-      context: ./backend/chroma_service
-      dockerfile: dockerfile.chromadb
-    environment:
-      - CHROMA_PERSIST_PATH=/data/chroma
-    volumes:
-      - chroma_data:/data/chroma
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/version/history')"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
-
-  rl_backend:
-    build:
-      context: ./backend/chroma_service
-      dockerfile: dockerfile.rl
-    ports:
-      - "5050:5050"
-    environment:
-      - CORS_ALLOWED_ORIGINS=http://localhost:3000
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5050/health')"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
-
 volumes:
-  chroma_data:
+  watchdog_data:

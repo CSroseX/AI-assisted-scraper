@@ -1,6 +1,5 @@
 export const LOADER_TEXT = {
-  writer: 'AI Writer is spinning the content...',
-  reviewer: 'AI Reviewer is refining the content...'
+  writer: 'AI Writer is spinning the content...'
 };
 
 // Index of the last message with the given `type`, or -1.
@@ -15,28 +14,6 @@ export function findLastIndexByType(messages, type) {
 export function replaceTrailingLoader(messages, loaderText, replacement) {
   if (!messages.length || messages[messages.length - 1].content !== loaderText) return messages;
   return [...messages.slice(0, -1), replacement];
-}
-
-export function reviewedMessage(review) {
-  return {
-    role: 'assistant',
-    content: review.reviewed,
-    type: 'reviewedContent',
-    reviewId: review.reviewId,
-    action: review.action
-  };
-}
-
-// Normalises the raw ChromaDB `get` result into an array of version objects.
-export function toVersionList(data) {
-  if (!data || !data.ids || !data.metadatas || !data.documents) return [];
-  return data.ids.map((id, i) => ({
-    id,
-    parent_version: data.metadatas[i]?.parent_version || '',
-    content: data.documents[i] || '',
-    timestamp: data.metadatas[i]?.timestamp || 0,
-    editor: data.metadatas[i]?.editor || 'user'
-  }));
 }
 
 // Maps a stored screenshot path (possibly Windows-style) to a URL path segment.

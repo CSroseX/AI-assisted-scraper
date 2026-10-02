@@ -6,14 +6,11 @@ require('dotenv').config();
 const path = require('path');
 const fs = require('fs');
 const axios = require('axios');
-const crypto = require('crypto');
 const rateLimit = require('express-rate-limit');
-const {
-  isPrivateIPv4,
-  isPrivateIPv6,
-  validateScrapeUrl,
-  createGuardProxy
-} = require('./ssrf');
+const { isPrivateIPv4, isPrivateIPv6 } = require('./ssrf');
+const { SCREENSHOT_DIR, validateScrapeUrl, captureSnapshot, scraperBusy, closeScraper } = require('./scraper');
+const { closeDb } = require('./db');
+const watchesRouter = require('./watches');
 
 function parseAllowedOrigins(raw = '') {
   const parsed = String(raw)
@@ -61,15 +58,10 @@ const scrapeLimiter = rateLimit({
 });
 app.use(apiLimiter);
 
-const SCREENSHOT_DIR = path.join(__dirname, 'screenshots');
 const SCREENSHOT_TTL_MS = Number(process.env.SCREENSHOT_TTL_MS || 60 * 60 * 1000);
 app.use('/screenshots', express.static(SCREENSHOT_DIR));
 
-const { chromium } = require('playwright');
-
 const HTTP_TIMEOUT_MS = Number(process.env.HTTP_TIMEOUT_MS || 20000);
-let sharedBrowser = null;
-let sharedBrowserPromise = null;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -95,48 +87,6 @@ async function withRetries(fn, { attempts = 2, baseDelayMs = 300 } = {}) {
   throw lastError;
 }
 
-let guardProxy = null;
-let guardProxyPromise = null;
-
-function startGuardProxy() {
-  if (!guardProxyPromise) {
-    guardProxy = createGuardProxy();
-    guardProxyPromise = guardProxy.listen();
-  }
-  return guardProxyPromise;
-}
-
-async function getSharedBrowser() {
-  if (sharedBrowser && sharedBrowser.isConnected()) {
-    return sharedBrowser;
-  }
-
-  if (sharedBrowserPromise) {
-    return sharedBrowserPromise;
-  }
-
-  sharedBrowserPromise = startGuardProxy()
-    .then((proxyPort) => chromium.launch({
-      // All browser traffic, including redirects, goes through the egress filter.
-      proxy: { server: `http://127.0.0.1:${proxyPort}` },
-      // Chromium bypasses proxies for loopback by default; force it through too
-      // so requests to 127.0.0.1 are seen (and refused) by the filter.
-      args: ['--proxy-bypass-list=<-loopback>']
-    }))
-    .then((browser) => {
-      sharedBrowser = browser;
-      browser.on('disconnected', () => {
-        sharedBrowser = null;
-      });
-      return browser;
-    })
-    .finally(() => {
-      sharedBrowserPromise = null;
-    });
-
-  return sharedBrowserPromise;
-}
-
 function clampTextForModel(text, maxChars = 12000) {
   const source = String(text || '');
   if (source.length <= maxChars) {
@@ -148,10 +98,6 @@ function clampTextForModel(text, maxChars = 12000) {
     truncated: true
   };
 }
-
-// Caps simultaneous browser contexts so a burst of requests cannot exhaust memory.
-const MAX_CONCURRENT_SCRAPES = Number(process.env.MAX_CONCURRENT_SCRAPES || 3);
-let activeScrapes = 0;
 
 // Screenshots are transient: delete anything older than the TTL.
 function cleanupScreenshots(now = Date.now()) {
@@ -172,6 +118,24 @@ function cleanupScreenshots(now = Date.now()) {
   }
 }
 
+// Maps scraper/browser failures to safe client responses. Shared with the
+// watches snapshot pipeline so both surfaces report failures consistently.
+function sendScrapeError(res, err, label = 'Scrape API') {
+  const message = String(err.message || '');
+  if (message.includes('Executable doesn\'t exist')) {
+    console.error(`${label} error: Playwright browser binaries are not installed.`);
+    return res.status(500).json({
+      error: 'Playwright browser binaries are not installed.',
+      fix: 'Run `npx playwright install chromium` inside the backend folder.'
+    });
+  }
+  if (/ERR_TUNNEL_CONNECTION_FAILED|ERR_PROXY_CONNECTION_FAILED|ERR_EMPTY_RESPONSE|ERR_CONNECTION_CLOSED/.test(message)) {
+    return res.status(502).json({ error: 'The page could not be fetched: the destination is unreachable or blocked (private addresses are not allowed, including via redirects).' });
+  }
+  console.error(`${label} error:`, message);
+  return res.status(500).json({ error: 'Scrape failed' });
+}
+
 app.post('/scrape', scrapeLimiter, async (req, res) => {
   const { url, includeScreenshot = true } = req.body || {};
   if (!url || typeof url !== 'string') {
@@ -183,58 +147,16 @@ app.post('/scrape', scrapeLimiter, async (req, res) => {
     return res.status(400).json({ error: urlCheck.reason });
   }
 
-  if (activeScrapes >= MAX_CONCURRENT_SCRAPES) {
+  if (scraperBusy()) {
     res.set('Retry-After', '5');
     return res.status(503).json({ error: 'Scraper is busy, please retry shortly.' });
   }
 
-  activeScrapes++;
-  let context;
   try {
-    const browser = await getSharedBrowser();
-    context = await browser.newContext();
-    const page = await context.newPage();
-    await page.goto(urlCheck.parsedUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
-
-    const content = await page.evaluate(() => {
-      // Try to get main content, fallback to body text
-      const main = document.querySelector('main');
-      return main ? main.innerText : document.body.innerText;
-    });
-
-    // Attempt screenshot only when requested; do not fail scrape on image errors.
-    let relativeScreenshotPath = null;
-    if (includeScreenshot) {
-      try {
-        const fileName = `${crypto.randomUUID()}.png`;
-        fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
-        await page.screenshot({ path: path.join(SCREENSHOT_DIR, fileName), fullPage: true, timeout: 10000 });
-        relativeScreenshotPath = 'screenshots/' + fileName;
-      } catch (shotErr) {
-        console.warn('Screenshot failed, continuing without image:', shotErr.message);
-      }
-    }
-
-    res.json({ content, screenshotPath: relativeScreenshotPath });
+    const result = await captureSnapshot(urlCheck.parsedUrl, { includeScreenshot });
+    res.json(result);
   } catch (err) {
-    const message = String(err.message || '');
-    if (message.includes('Executable doesn\'t exist')) {
-      console.error('Scrape API error: Playwright browser binaries are not installed.');
-      return res.status(500).json({
-        error: 'Playwright browser binaries are not installed.',
-        fix: 'Run `npx playwright install chromium` inside the backend folder.'
-      });
-    }
-    if (/ERR_TUNNEL_CONNECTION_FAILED|ERR_PROXY_CONNECTION_FAILED|ERR_EMPTY_RESPONSE|ERR_CONNECTION_CLOSED/.test(message)) {
-      return res.status(502).json({ error: 'The page could not be fetched: the destination is unreachable or blocked (private addresses are not allowed, including via redirects).' });
-    }
-    console.error('Scrape API error:', message);
-    return res.status(500).json({ error: 'Scrape failed' });
-  } finally {
-    activeScrapes--;
-    if (context) {
-      await context.close().catch(() => {});
-    }
+    sendScrapeError(res, err);
   }
 });
 
@@ -489,108 +411,7 @@ app.post('/summarize', async (req, res) => {
   }
 });
 
-// Version service base URL (FastAPI wrapper).
-// In Docker, set VERSION_API_BASE to http://chromadb:8001.
-const VERSION_API_BASE = process.env.VERSION_API_BASE || 'http://localhost:8001';
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-// Maps upstream version-service failures to safe client responses.
-function sendVersionError(res, err, label) {
-  const upstream = err.response?.status;
-  console.error(`${label} error:`, err.message);
-  if (upstream === 404) return res.status(404).json({ error: 'Version not found' });
-  if (upstream && upstream >= 400 && upstream < 500) {
-    return res.status(400).json({ error: 'Invalid request' });
-  }
-  return res.status(502).json({ error: 'Version service unavailable' });
-}
-
-function clampInt(value, fallback, min, max) {
-  const n = Number.parseInt(value, 10);
-  if (Number.isNaN(n)) return fallback;
-  return Math.max(min, Math.min(max, n));
-}
-
-// Proxy: Add version using Python FastAPI service
-app.post('/version', async (req, res) => {
-  const { content, editor } = req.body || {};
-  // The UI sends "" for a root version; treat empty as absent.
-  const parent_version = req.body?.parent_version || null;
-  if (!isNonEmptyString(content)) {
-    return res.status(400).json({ error: 'content is required' });
-  }
-  if (parent_version != null && (typeof parent_version !== 'string' || !UUID_RE.test(parent_version))) {
-    return res.status(400).json({ error: 'parent_version must be a valid version id' });
-  }
-  if (editor != null && (typeof editor !== 'string' || editor.length > 100)) {
-    return res.status(400).json({ error: 'editor must be a string of at most 100 characters' });
-  }
-
-  const payload = { content };
-  if (parent_version != null) payload.parent_version = parent_version;
-  if (editor != null) payload.editor = editor;
-
-  try {
-    const response = await withRetries(
-      () => axios.post(`${VERSION_API_BASE}/version`, payload, { timeout: HTTP_TIMEOUT_MS }),
-      { attempts: 2 }
-    );
-    res.json(response.data);
-  } catch (err) {
-    sendVersionError(res, err, '/version');
-  }
-});
-
-// Proxy: List version history using Python FastAPI service
-app.get('/version/history', async (req, res) => {
-  const limit = clampInt(req.query.limit, 50, 1, 200);
-  const offset = clampInt(req.query.offset, 0, 0, 1000000);
-  try {
-    const response = await withRetries(
-      () => axios.get(`${VERSION_API_BASE}/version/history`, {
-        timeout: HTTP_TIMEOUT_MS,
-        params: { limit, offset }
-      }),
-      { attempts: 2 }
-    );
-    res.json(response.data);
-  } catch (err) {
-    sendVersionError(res, err, '/version/history');
-  }
-});
-
-// Proxy: Get version by ID
-app.get('/version/:id', async (req, res) => {
-  if (!UUID_RE.test(req.params.id)) {
-    return res.status(400).json({ error: 'Invalid version id' });
-  }
-  try {
-    const response = await withRetries(
-      () => axios.get(`${VERSION_API_BASE}/version/${req.params.id}`, { timeout: HTTP_TIMEOUT_MS }),
-      { attempts: 2 }
-    );
-    res.json(response.data);
-  } catch (err) {
-    sendVersionError(res, err, '/version/:id');
-  }
-});
-
-// Proxy: Restore version
-app.post('/version/restore/:id', async (req, res) => {
-  if (!UUID_RE.test(req.params.id)) {
-    return res.status(400).json({ error: 'Invalid version id' });
-  }
-  try {
-    const response = await withRetries(
-      () => axios.post(`${VERSION_API_BASE}/version/restore/${req.params.id}`, {}, { timeout: HTTP_TIMEOUT_MS }),
-      { attempts: 2 }
-    );
-    res.json(response.data);
-  } catch (err) {
-    sendVersionError(res, err, '/version/restore/:id');
-  }
-});
+app.use('/watches', watchesRouter);
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
@@ -612,10 +433,8 @@ if (require.main === module) {
   app.listen(PORT, () => console.log(`Server is running on port ${PORT}`));
 
   const shutdown = async () => {
-    if (sharedBrowser && sharedBrowser.isConnected()) {
-      await sharedBrowser.close().catch(() => {});
-    }
-    if (guardProxy) await guardProxy.close().catch(() => {});
+    await closeScraper();
+    closeDb();
     process.exit(0);
   };
 
@@ -631,6 +450,7 @@ module.exports = {
   parseAllowedOrigins,
   cleanupScreenshots,
   sanitizeHistory,
+  sendScrapeError,
   // Exposed for unit tests
   clampTextForModel,
   withRetries,
