@@ -38,24 +38,24 @@ Two services instead of four.
 | Hardened scraper (egress proxy, limits) | Keep. Core asset. |
 | Groq client | Keep. Used only to explain changes. |
 | React frontend | Keep. Rebuild screens around watches instead of chat sessions. |
-| SQLite (single file, migrations, Docker volume, backups) | **New.** Tables: `users`, `watches`, `snapshots`, `changes`, `alerts`, `feedback`. |
-| Flask "RL" review service | **Remove.** The RL work is dropped (issue #6, closed as not planned). Thumbs up/down become plain stored `feedback` used to tune thresholds, not a learning system. |
-| ChromaDB version service | **Remove** as the version store; SQLite replaces it. Semantic search over history can be revisited later. |
+| SQLite (single file, migrations, Docker volume, backups) | ✅ **New.** Tables: `users`, `watches`, `snapshots`, `changes`, `alerts`, `feedback`. (`watches`, `snapshots`, `changes` exist; `users`, `alerts`, `feedback` and backups are not built yet.) |
+| Flask "RL" review service | ✅ **Remove.** The RL work is dropped (issue #6, closed as not planned). Thumbs up/down become plain stored `feedback` used to tune thresholds, not a learning system. |
+| ChromaDB version service | ✅ **Remove** as the version store; SQLite replaces it. Semantic search over history can be revisited later. |
 
 The removals are one-way simplifications but everything remains in git history.
 
 ## 4. Roadmap
 
-### Phase 0: foundations (done)
+### Phase 0: foundations ✅ (done)
 SSRF hardening via egress proxy, rate limiting and input validation, repo cleanup, tests and CI (Node, Python, frontend), `App.js` refactor into hooks and components.
 
 ### Phase 1: it works for one person
 Order reflects dependencies.
 
-0. **Cleanup:** remove the RL and Chroma services (code, Docker services, CI jobs, README) and the frontend calls to them.
-1. **Storage and watches API:** SQLite schema with migrations; create, list, pause and delete watches. A watch has a URL, an optional CSS selector, and a frequency (daily or weekly). Single fixed owner until Phase 2.
-2. **Snapshot pipeline:** fetch via the guarded proxy, extract main text, normalise, take a screenshot, and store a new snapshot only when the content hash changes. Size caps and a retention policy.
-3. **Diff engine (no LLM):** paragraph-level diff with noise filtering, tuned against a corpus of 20-30 real ToS and pricing pages.
+0. ✅ **Cleanup:** remove the RL and Chroma services (code, Docker services, CI jobs, README) and the frontend calls to them.
+1. ✅ **Storage and watches API:** SQLite schema with migrations; create, list, pause and delete watches. A watch has a URL, an optional CSS selector, and a frequency (daily or weekly). Single fixed owner until Phase 2.
+2. ✅ **Snapshot pipeline:** fetch via the guarded proxy, extract main text, normalise, take a screenshot, and store a new snapshot only when the content hash changes. (Size caps and a retention policy are not built yet.)
+3. ✅ **Diff engine (no LLM):** paragraph-level diff with noise filtering. (Not yet tuned against a corpus of 20-30 real ToS and pricing pages — only unit-tested on synthetic examples.)
 4. **Scheduler:** jittered runs that survive restarts, respect the scrape concurrency cap, back off on failures, and mark a watch "broken" after repeated failures.
 5. **Explainer:** runs only when a real diff exists. Classifies each change (price, fees, cancellation, data use, cosmetic) and explains it with quoted text; output is validated against the diff.
 6. **Alerts:** email and RSS **(open)**, with links to before/after and screenshots. Deduplicated.

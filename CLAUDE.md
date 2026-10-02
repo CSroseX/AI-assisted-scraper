@@ -8,10 +8,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `docs/PLAN.md` (on `dev`) is the product direction and it **pivots the project**: from a scrape-and-rewrite demo to a **watchdog for ToS/pricing pages** that snapshots URLs on a schedule and alerts on meaningful changes. Consequences for anyone touching this code:
 
-- The **Flask RL service is slated for removal** — the RL approach was dropped (issue #6, closed as not planned). Thumbs up/down become plain stored feedback used to tune thresholds, not a learning signal.
-- The **ChromaDB version service is slated for removal**, replaced by SQLite (`users`, `watches`, `snapshots`, `changes`, `alerts`, `feedback`).
+- The **Flask RL service is slated for removal** ✅ — the RL approach was dropped (issue #6, closed as not planned). Thumbs up/down become plain stored feedback used to tune thresholds, not a learning signal.
+- The **ChromaDB version service is slated for removal** ✅, replaced by SQLite (`users`, `watches`, `snapshots`, `changes`, `alerts`, `feedback`).
 - The **Express backend, the hardened scraper, the Groq client and the React shell are keepers.** The scraper hardening is described in the plan as the project's core asset.
-- Phase 1 step 0 is explicitly the cleanup of the RL and Chroma services.
+- Phase 1 step 0 is explicitly the cleanup of the RL and Chroma services. ✅
 
 So prefer not to invest in the RL or Chroma paths unless asked. Its governing principle for new work: **detect deterministically, explain with the LLM** — changes come from a plain diff, the model only classifies and explains, and every claim must quote text present in the diff or be dropped.
 
