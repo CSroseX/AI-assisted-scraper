@@ -1,3 +1,0 @@
-# Aggregate requirements for local backend setup.
--r chroma_service/requirements-fastapi.txt
--r chroma_service/requirements-rl.txt

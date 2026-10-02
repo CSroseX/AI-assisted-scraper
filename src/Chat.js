@@ -4,7 +4,7 @@ import remarkGfm from 'remark-gfm';
 import { normalizeAssistantMarkdown } from './utils/markdown';
 import './Chat.css';
 
-function Chat({ messages, spunIndex, showEditButton, onEditSpun, thumbAnim, onThumbUp, onThumbDown, feedbackSubmitted }) {
+function Chat({ messages, spunIndex, showEditButton, onEditSpun }) {
   const messagesEndRef = useRef(null);
 
   useEffect(() => {
@@ -23,7 +23,7 @@ function Chat({ messages, spunIndex, showEditButton, onEditSpun, thumbAnim, onTh
             ) : (
               <span>{msg.content}</span>
             )}
-            {/* Edit and thumbs for only the last spun content message */}
+            {/* Edit button for only the last spun content message */}
             {showEditButton && idx === spunIndex && (
               <div style={{ position: 'relative', width: '100%', height: 0, display: 'flex', alignItems: 'center', gap: 12, marginTop: 8 }}>
                 <button
@@ -45,21 +45,6 @@ function Chat({ messages, spunIndex, showEditButton, onEditSpun, thumbAnim, onTh
                   }}
                   title="Edit spun content"
                 >✏️</button>
-                {/* Thumbs up/down beside edit */}
-                <button
-                  className={thumbAnim === 'up' ? 'thumb-anim' : ''}
-                  onClick={onThumbUp}
-                  style={{ background: '#10a37f', color: '#fff', border: 'none', borderRadius: '50%', width: 36, height: 36, fontSize: 18, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'transform 0.2s' }}
-                  disabled={feedbackSubmitted}
-                  title="Thumbs Up"
-                >👍</button>
-                <button
-                  className={thumbAnim === 'down' ? 'thumb-anim' : ''}
-                  onClick={onThumbDown}
-                  style={{ background: '#ff5c5c', color: '#fff', border: 'none', borderRadius: '50%', width: 36, height: 36, fontSize: 18, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'transform 0.2s' }}
-                  disabled={feedbackSubmitted}
-                  title="Thumbs Down"
-                >👎</button>
               </div>
             )}
           </div>

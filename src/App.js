@@ -9,32 +9,24 @@ import ScrapedDataModal from './components/ScrapedDataModal';
 import ScreenshotModal from './components/ScreenshotModal';
 import SpunEditor from './components/SpunEditor';
 import Toast from './components/Toast';
-import VersionHistoryModal from './components/VersionHistoryModal';
 import { useNotifications } from './hooks/useNotifications';
-import { useReviewFeedback } from './hooks/useReviewFeedback';
 import { useScrapeWorkflow } from './hooks/useScrapeWorkflow';
 import { useSessions } from './hooks/useSessions';
 import { useSpunEditor } from './hooks/useSpunEditor';
-import { useVersionHistory } from './hooks/useVersionHistory';
 import { findLastIndexByType } from './utils/messages';
 import './App.css';
 
 function App() {
   const { sessions, currentSession, currentSessionId, selectSession, updateSession, addSession, deleteSession } = useSessions();
   const { notifications, toast, notify } = useNotifications();
-  const { versionHistory, refresh: refreshVersions } = useVersionHistory();
-  const feedback = useReviewFeedback({ notify });
   const workflow = useScrapeWorkflow({
     currentSession,
     currentSessionId,
     updateSession,
-    refreshVersions,
-    setCurrentReviewId: feedback.setCurrentReviewId,
-    resetFeedback: feedback.resetFeedback,
     notify
   });
 
-  const [modal, setModal] = useState(null); // 'screenshot' | 'scrapedData' | 'history' | null
+  const [modal, setModal] = useState(null); // 'screenshot' | 'scrapedData' | null
 
   const messages = currentSession?.messages || [];
   const spunIndex = findLastIndexByType(messages, 'spunContent');
@@ -81,18 +73,12 @@ function App() {
           spunIndex={spunIndex}
           showEditButton={!editor.editing && !!spunMsg}
           onEditSpun={editor.start}
-          thumbAnim={feedback.thumbAnim}
-          onThumbUp={feedback.onThumbUp}
-          onThumbDown={feedback.onThumbDown}
-          feedbackSubmitted={feedback.feedbackSubmitted}
         />
         <ChatInput onSend={workflow.sendMessage} />
         {hasScrape && (
           <OptionsBar
             onShowScreenshot={() => setModal('screenshot')}
             onShowScrapedData={() => setModal('scrapedData')}
-            onShowHistory={() => setModal('history')}
-            hasHistory={versionHistory.length > 1}
           />
         )}
         {modal === 'screenshot' && currentSession?.screenshotPath && (
@@ -100,9 +86,6 @@ function App() {
         )}
         {modal === 'scrapedData' && currentSession?.scrapedContent && (
           <ScrapedDataModal content={currentSession.scrapedContent} onClose={() => setModal(null)} />
-        )}
-        {modal === 'history' && (
-          <VersionHistoryModal versions={versionHistory} onClose={() => setModal(null)} />
         )}
         <Toast message={toast} />
       </div>

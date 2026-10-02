@@ -2,7 +2,7 @@ import React from 'react';
 
 const buttonStyle = { display: 'flex', alignItems: 'center', gap: 8 };
 
-function OptionsBar({ onShowScreenshot, onShowScrapedData, onShowHistory, hasHistory }) {
+function OptionsBar({ onShowScreenshot, onShowScrapedData }) {
   return (
     <div className="options-area">
       <button onClick={onShowScreenshot} style={buttonStyle}>
@@ -11,11 +11,6 @@ function OptionsBar({ onShowScreenshot, onShowScrapedData, onShowHistory, hasHis
       <button onClick={onShowScrapedData} style={buttonStyle}>
         <span role="img" aria-label="scraped-data">📄</span> See Scraped Data
       </button>
-      {hasHistory && (
-        <button onClick={onShowHistory} style={buttonStyle}>
-          <span role="img" aria-label="history">🕑</span> Version History
-        </button>
-      )}
     </div>
   );
 }

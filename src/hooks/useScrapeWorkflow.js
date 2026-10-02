@@ -1,8 +1,8 @@
 import { useState } from 'react';
-import { askWithRouting, reviewContent, saveVersion, scrapeUrl, spinText } from '../api/client';
+import { askWithRouting, scrapeUrl, spinText } from '../api/client';
 import { reportError } from '../utils/errors';
 import { isValidUrl } from '../utils/url';
-import { LOADER_TEXT, replaceTrailingLoader, reviewedMessage } from '../utils/messages';
+import { LOADER_TEXT, replaceTrailingLoader } from '../utils/messages';
 
 const THINKING = 'Thinking...';
 
@@ -16,18 +16,12 @@ async function attempt(promise) {
   }
 }
 
-// Orchestrates scrape -> AI Writer (spin) -> AI Reviewer, plus edits and chat.
-export function useScrapeWorkflow({ currentSession, currentSessionId, updateSession, refreshVersions, setCurrentReviewId, resetFeedback, notify }) {
+// Orchestrates scrape -> AI Writer (spin), plus edits and chat.
+export function useScrapeWorkflow({ currentSession, currentSessionId, updateSession, notify }) {
   const [loading, setLoading] = useState(false);
-
-  const showReview = (id, review) => {
-    setCurrentReviewId(review.reviewId || null);
-    updateSession(id, (s) => ({ ...s, messages: [...s.messages, reviewedMessage(review)] }));
-  };
 
   const submitUrl = async (url) => {
     const id = currentSessionId;
-    resetFeedback();
     updateSession(id, {
       url,
       awaitingUrl: false,
@@ -65,44 +59,16 @@ export function useScrapeWorkflow({ currentSession, currentSessionId, updateSess
           : { role: 'assistant', content: 'Failed to spin content.' };
       })
     }));
-    if (!spunText) return;
-
-    // Only the AI Writer output is stored as a version at this stage.
-    await attempt(saveVersion(spunText, null, 'ai-writer'));
-    await refreshVersions();
-
-    const review = await attempt(reviewContent(spunText));
-    if (review?.reviewed) showReview(id, review);
   };
 
-  // User edited the AI Writer output: store it, then re-run the reviewer on it.
+  // User edited the AI Writer output in place.
   const editWriter = async (newContent) => {
     const id = currentSessionId;
-    const version = await attempt(saveVersion(newContent, null, 'ai-writer'));
-    if (!version) return;
-
     updateSession(id, (s) => ({
       ...s,
       scrapedContent: newContent,
-      messages: [
-        ...s.messages
-          .map((m) => (m.type === 'spunContent' ? { ...m, content: newContent } : m))
-          .filter((m) => m.type !== 'reviewedContent'),
-        { role: 'assistant', content: LOADER_TEXT.reviewer, type: 'loader' }
-      ]
+      messages: s.messages.map((m) => (m.type === 'spunContent' ? { ...m, content: newContent } : m))
     }));
-
-    const review = await attempt(reviewContent(newContent));
-    setCurrentReviewId(review?.reviewId || null);
-    updateSession(id, (s) => ({
-      ...s,
-      messages: replaceTrailingLoader(
-        s.messages,
-        LOADER_TEXT.reviewer,
-        review?.reviewed ? reviewedMessage(review) : { role: 'assistant', content: 'AI Reviewer failed to reply.' }
-      )
-    }));
-    await refreshVersions();
   };
 
   const sendMessage = async (text) => {

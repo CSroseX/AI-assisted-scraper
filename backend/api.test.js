@@ -46,15 +46,6 @@ test('input validation rejects missing or non-string fields', async () => {
   assert.equal((await post('/summarize', { content: 123 })).status, 400);
   assert.equal((await post('/spin', { text: '' })).status, 400);
   assert.equal((await post('/ask', { content: 'hi', message: 42 })).status, 400);
-  assert.equal((await post('/version', { content: '' })).status, 400);
-  assert.equal((await post('/version', { content: 'a', parent_version: '../etc' })).status, 400);
-});
-
-test('version id path parameters must be UUIDs', async () => {
-  const res = await fetch(`${base}/version/..%2F..%2Fadmin`);
-  assert.equal(res.status, 400);
-  const restore = await post('/version/restore/not-a-uuid', {});
-  assert.equal(restore.status, 400);
 });
 
 test('/scrape rejects private targets and is rate limited', async () => {

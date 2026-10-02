@@ -1,12 +1,4 @@
-import {
-  askWithRouting,
-  fetchVersionHistory,
-  reviewContent,
-  saveVersion,
-  scrapeUrl,
-  sendFeedback,
-  spinText
-} from './client';
+import { askWithRouting, scrapeUrl, spinText } from './client';
 
 function mockFetch(response) {
   global.fetch = jest.fn().mockResolvedValue(response);
@@ -44,8 +36,8 @@ describe('scrapeUrl', () => {
   });
 });
 
-describe('spinText / saveVersion / reviewContent', () => {
-  test('spinText sends the default prompt unless overridden', async () => {
+describe('spinText', () => {
+  test('sends the default prompt unless overridden', async () => {
     const fetchMock = mockFetch(ok({ spun: 's' }));
     await spinText('hello');
     expect(JSON.parse(fetchMock.mock.calls[0][1].body).prompt).toMatch(/Rewrite in modern English/);
@@ -53,31 +45,9 @@ describe('spinText / saveVersion / reviewContent', () => {
     expect(JSON.parse(fetchMock.mock.calls[1][1].body).prompt).toBe('custom');
   });
 
-  test('saveVersion posts content, parent and editor', async () => {
-    const fetchMock = mockFetch(ok({ id: 'v1' }));
-    await saveVersion('c', null, 'ai-writer');
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ content: 'c', parent_version: null, editor: 'ai-writer' });
-  });
-
-  test('reviewContent maps snake_case fields', async () => {
-    mockFetch(ok({ reviewed: 'r', review_id: 'id1', action: 0 }));
-    await expect(reviewContent('x')).resolves.toEqual({ reviewed: 'r', reviewId: 'id1', action: 0 });
-  });
-
   test('failures surface as errors', async () => {
     mockFetch(fail({}));
     await expect(spinText('x')).rejects.toThrow('Spin failed');
-    await expect(saveVersion('x')).rejects.toThrow('Save version failed');
-    await expect(reviewContent('x')).rejects.toThrow('Review failed');
-  });
-});
-
-describe('fetchVersionHistory', () => {
-  test('returns the raw payload and throws on failure', async () => {
-    mockFetch(ok({ ids: [] }));
-    await expect(fetchVersionHistory()).resolves.toEqual({ ids: [] });
-    mockFetch(fail({}));
-    await expect(fetchVersionHistory()).rejects.toThrow('Failed to fetch version history');
   });
 });
 
@@ -107,18 +77,5 @@ describe('askWithRouting', () => {
     });
     mockFetch(fail({ error: 'Too many requests' }));
     await expect(askWithRouting('c', [], 'q')).rejects.toThrow('Too many requests');
-  });
-});
-
-describe('sendFeedback', () => {
-  test('posts reward and review id', async () => {
-    const fetchMock = mockFetch(ok({}));
-    await sendFeedback(-1, 'r1');
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ reward: -1, review_id: 'r1' });
-  });
-
-  test('throws when the service rejects it', async () => {
-    mockFetch(fail({}));
-    await expect(sendFeedback(1, 'r1')).rejects.toThrow('Feedback failed');
   });
 });
