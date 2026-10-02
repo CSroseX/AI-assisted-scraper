@@ -21,7 +21,7 @@ Requirements: Docker and Docker Compose installed.
 
 ```bash
 # Set up environment
-cp backend/.env.example backend/.env  # then set GROQ_API_KEY and CLEAR_API_TOKEN
+cp backend/.env.example backend/.env  # then set GROQ_API_KEY
 
 # Start all services
 docker-compose up --build
@@ -85,6 +85,23 @@ CI (`.github/workflows/ci.yml`) runs both suites plus lint and a production fron
 ### Dependency files
 - `package.json` (repo root): the React frontend.
 - `backend/package.json`: the Node/Express backend.
+
+---
+
+## Watches API
+
+Single fixed owner for now (no accounts yet; see `docs/PLAN.md` Phase 2). All endpoints are on the Express backend.
+
+- `POST /watches` — create a watch. Body: `{ url, frequency: 'daily'|'weekly', selector? }`
+- `GET /watches` — list all watches
+- `GET /watches/:id` — get one watch
+- `PATCH /watches/:id` — update status. Body: `{ status: 'active'|'paused'|'broken' }`
+- `DELETE /watches/:id` — delete a watch and its snapshots/changes
+- `GET /watches/:id/snapshots` — list stored snapshots (newest first)
+- `GET /watches/:id/changes` — list detected changes with their diff (newest first)
+- `POST /watches/:id/check` — run the snapshot pipeline now: fetch the page, hash its content, store a new snapshot only if the hash changed, and diff it against the previous snapshot if one exists. There is no scheduler yet, so checks are manual.
+
+The diff is a deterministic paragraph-level comparison (`backend/diff.js`) with noise filtering for timestamps, counters and copyright-year footers — no LLM is involved in detection. An LLM explainer and automatic scheduling are not built yet.
 
 ---
 
