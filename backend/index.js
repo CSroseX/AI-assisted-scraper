@@ -11,6 +11,7 @@ const { isPrivateIPv4, isPrivateIPv6 } = require('./ssrf');
 const { SCREENSHOT_DIR, validateScrapeUrl, captureSnapshot, scraperBusy, closeScraper } = require('./scraper');
 const { closeDb } = require('./db');
 const watchesRouter = require('./watches');
+const scheduler = require('./scheduler');
 
 function parseAllowedOrigins(raw = '') {
   const parsed = String(raw)
@@ -413,6 +414,10 @@ app.post('/summarize', async (req, res) => {
 
 app.use('/watches', watchesRouter);
 
+app.get('/scheduler/status', (_req, res) => {
+  res.json(scheduler.status());
+});
+
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
 });
@@ -430,9 +435,14 @@ const PORT = Number(process.env.PORT || 5000);
 if (require.main === module) {
   cleanupScreenshots();
   setInterval(cleanupScreenshots, Math.max(60000, Math.floor(SCREENSHOT_TTL_MS / 4))).unref();
+  if (process.env.SCHEDULER_ENABLED !== 'false') {
+    scheduler.start();
+    console.log(`Scheduler started, ticking every ${scheduler.TICK_MS}ms`);
+  }
   app.listen(PORT, () => console.log(`Server is running on port ${PORT}`));
 
   const shutdown = async () => {
+    scheduler.stop();
     await closeScraper();
     closeDb();
     process.exit(0);
@@ -449,6 +459,7 @@ module.exports = {
   isPrivateIPv6,
   parseAllowedOrigins,
   cleanupScreenshots,
+  scheduler,
   sanitizeHistory,
   sendScrapeError,
   // Exposed for unit tests
