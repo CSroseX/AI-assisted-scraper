@@ -5,6 +5,7 @@ import UrlModal from './UrlModal';
 import AppHeader from './components/AppHeader';
 import ChatInput from './components/ChatInput';
 import OptionsBar from './components/OptionsBar';
+import ChangeExplanation from './components/ChangeExplanation';
 import ScrapedDataModal from './components/ScrapedDataModal';
 import ScreenshotModal from './components/ScreenshotModal';
 import SpunEditor from './components/SpunEditor';
@@ -13,6 +14,7 @@ import { useNotifications } from './hooks/useNotifications';
 import { useScrapeWorkflow } from './hooks/useScrapeWorkflow';
 import { useSessions } from './hooks/useSessions';
 import { useSpunEditor } from './hooks/useSpunEditor';
+import { useWatchCheck } from './hooks/useWatchCheck';
 import { findLastIndexByType } from './utils/messages';
 import './App.css';
 
@@ -20,6 +22,13 @@ function App() {
   const { sessions, currentSession, currentSessionId, selectSession, updateSession, addSession, deleteSession } = useSessions();
   const { notifications, toast, notify } = useNotifications();
   const workflow = useScrapeWorkflow({
+    currentSession,
+    currentSessionId,
+    updateSession,
+    notify
+  });
+
+  const watchCheck = useWatchCheck({
     currentSession,
     currentSessionId,
     updateSession,
@@ -36,8 +45,17 @@ function App() {
   // The URL modal is shown whenever the active chat is still waiting for a URL.
   const awaitingUrl = !!currentSession?.awaitingUrl;
 
+  // A change explanation renders as a card. Chat passes a non-string `content`
+  // straight through, so no change to Chat itself is needed.
+  const withExplanations = messages.map((m) => (
+    m.type !== 'changeExplanation' || !m.change ? m : {
+      ...m,
+      content: <ChangeExplanation {...m.change} />
+    }
+  ));
+
   const chatMessages = editor.editing && spunMsg
-    ? messages.map((m, i) => (i !== spunIndex ? m : {
+    ? withExplanations.map((m, i) => (i !== spunIndex ? m : {
         ...m,
         content: (
           <SpunEditor
@@ -53,7 +71,7 @@ function App() {
           />
         )
       }))
-    : messages;
+    : withExplanations;
 
   const hasScrape = !!(currentSession?.scrapedContent && currentSession?.screenshotPath);
 
@@ -79,6 +97,8 @@ function App() {
           <OptionsBar
             onShowScreenshot={() => setModal('screenshot')}
             onShowScrapedData={() => setModal('scrapedData')}
+            onCheckForChanges={watchCheck.checkForChanges}
+            checking={watchCheck.checking}
           />
         )}
         {modal === 'screenshot' && currentSession?.screenshotPath && (

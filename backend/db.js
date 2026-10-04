@@ -44,7 +44,16 @@ const ADDED_COLUMNS = [
   { table: 'watches', column: 'next_check_at', ddl: 'ALTER TABLE watches ADD COLUMN next_check_at INTEGER' },
   { table: 'watches', column: 'last_checked_at', ddl: 'ALTER TABLE watches ADD COLUMN last_checked_at INTEGER' },
   { table: 'watches', column: 'failure_count', ddl: 'ALTER TABLE watches ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0' },
-  { table: 'watches', column: 'last_error', ddl: 'ALTER TABLE watches ADD COLUMN last_error TEXT' }
+  { table: 'watches', column: 'last_error', ddl: 'ALTER TABLE watches ADD COLUMN last_error TEXT' },
+  // The explainer's output, stored on the change it describes. `summary` stays
+  // NULL when the explanation could not be verified or the model was
+  // unreachable -- the change itself is still a fact either way.
+  { table: 'changes', column: 'category', ddl: 'ALTER TABLE changes ADD COLUMN category TEXT' },
+  { table: 'changes', column: 'summary', ddl: 'ALTER TABLE changes ADD COLUMN summary TEXT' },
+  { table: 'changes', column: 'quotes_json', ddl: 'ALTER TABLE changes ADD COLUMN quotes_json TEXT' },
+  { table: 'changes', column: 'explained_at', ddl: 'ALTER TABLE changes ADD COLUMN explained_at INTEGER' },
+  { table: 'changes', column: 'explain_error', ddl: 'ALTER TABLE changes ADD COLUMN explain_error TEXT' },
+  { table: 'changes', column: 'diff_hash', ddl: 'ALTER TABLE changes ADD COLUMN diff_hash TEXT' }
 ];
 
 function applyAddedColumns(database) {

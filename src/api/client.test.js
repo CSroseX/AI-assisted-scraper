@@ -1,4 +1,4 @@
-import { askWithRouting, scrapeUrl, spinText } from './client';
+import { askWithRouting, checkWatch, createWatch, listChanges, listWatches, scrapeUrl, spinText } from './client';
 
 function mockFetch(response) {
   global.fetch = jest.fn().mockResolvedValue(response);
@@ -77,5 +77,44 @@ describe('askWithRouting', () => {
     });
     mockFetch(fail({ error: 'Too many requests' }));
     await expect(askWithRouting('c', [], 'q')).rejects.toThrow('Too many requests');
+  });
+});
+
+describe('watches', () => {
+  test('listWatches GETs /watches', async () => {
+    const fetchMock = mockFetch(ok([{ id: 1, url: 'https://a.test' }]));
+    await expect(listWatches()).resolves.toEqual([{ id: 1, url: 'https://a.test' }]);
+    expect(fetchMock.mock.calls[0][0]).toMatch(/\/watches$/);
+    // A GET must not carry a body or a method override.
+    expect(fetchMock.mock.calls[0][1]).toBeUndefined();
+  });
+
+  test('createWatch posts the url with a default daily frequency', async () => {
+    const fetchMock = mockFetch(ok({ id: 7 }));
+    await createWatch('https://a.test/pricing');
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      url: 'https://a.test/pricing', frequency: 'daily', selector: null
+    });
+  });
+
+  test('checkWatch posts to the watch check route', async () => {
+    const fetchMock = mockFetch(ok({ changed: false }));
+    await checkWatch(7);
+    expect(fetchMock.mock.calls[0][0]).toMatch(/\/watches\/7\/check$/);
+    expect(fetchMock.mock.calls[0][1].method).toBe('POST');
+  });
+
+  test('listChanges returns changes with their explanations', async () => {
+    mockFetch(ok([{ id: 3, category: 'price', summary: 'Up by $2.', quotes: ['Price: $12/month.'] }]));
+    const changes = await listChanges(7);
+    expect(changes[0].summary).toBe('Up by $2.');
+    expect(changes[0].quotes).toEqual(['Price: $12/month.']);
+  });
+
+  test('surfaces backend error messages', async () => {
+    mockFetch(fail({ error: 'Watch not found' }));
+    await expect(listChanges(99)).rejects.toThrow('Watch not found');
+    mockFetch(fail({}, true));
+    await expect(listWatches()).rejects.toThrow('Could not load watches');
   });
 });

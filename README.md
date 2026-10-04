@@ -9,6 +9,7 @@ AI-Assisted-scraper is moving from a scrape-and-rewrite demo toward a watchdog f
 - Contextual chat with the scraped content
 - Watches API: create, list, pause and delete URL watches, stored in SQLite
 - Snapshot pipeline: hash-gated snapshots of a watched page's content
+- Change explanations: plain-language summaries with quoted evidence from the page
 - Deterministic paragraph-level diff engine (no LLM) between snapshots
 
 ---
@@ -71,7 +72,7 @@ Tests include:
 - URL credential blocking
 - Request validation, body-size limits and rate limiting
 - CORS origin parsing
-- Watches API, snapshot pipeline and diff engine
+- Watches API, snapshot pipeline, diff engine, scheduler and explainer
 
 ### Run Frontend Tests
 ```bash
@@ -99,9 +100,23 @@ Single fixed owner for now (no accounts yet; see `docs/PLAN.md` Phase 2). All en
 - `DELETE /watches/:id` — delete a watch and its snapshots/changes
 - `GET /watches/:id/snapshots` — list stored snapshots (newest first)
 - `GET /watches/:id/changes` — list detected changes with their diff (newest first)
-- `POST /watches/:id/check` — run the snapshot pipeline now: fetch the page, hash its content, store a new snapshot only if the hash changed, and diff it against the previous snapshot if one exists. There is no scheduler yet, so checks are manual.
+- `POST /watches/:id/check` — run the snapshot pipeline now: fetch the page, hash its content, store a new snapshot only if the hash changed, and diff it against the previous snapshot if one exists. Active watches are also checked automatically on their own cadence by the scheduler; this endpoint is for triggering a check out of band.
 
-The diff is a deterministic paragraph-level comparison (`backend/diff.js`) with noise filtering for timestamps, counters and copyright-year footers — no LLM is involved in detection. An LLM explainer and automatic scheduling are not built yet.
+The diff is a deterministic paragraph-level comparison (`backend/diff.js`) with noise filtering for timestamps, counters and copyright-year footers — no LLM is involved in detection.
+
+### Explainer
+
+Once the diff has proved a change, `backend/explainer.js` asks the LLM what kind of change it is (`price`, `fees`, `cancellation`, `data_use`, `cosmetic`) and what it means in one sentence. `GET /watches/:id/changes` then returns `category`, `summary` and `quotes` alongside the raw diff.
+
+The model is never asked to quote. It receives the changed paragraphs numbered, and replies with the numbers its summary rests on; the quoted text is resolved from the stored diff. A quote the model was not given therefore cannot be produced. A summary that asserts a figure absent from the diff is discarded, leaving the change recorded but unexplained.
+
+Cost is bounded by the diff running first: an unchanged page makes no model call at all. A diff larger than `EXPLAIN_MAX_PARAGRAPHS` is recorded as a `layout_change` without calling the model, since a redesign is not a change in terms. Set `EXPLAIN_ENABLED=false` to detect changes without explaining them, which also allows running without a `GROQ_API_KEY`.
+
+### Scheduler
+
+- `GET /scheduler/status` — per-status watch counts, how many are due now, and the next 10 upcoming checks.
+
+Active watches are checked on their `frequency` (daily or weekly) by a scheduler whose state lives in SQLite (`next_check_at`, `failure_count`), so a restart cannot lose it and a watch that came due during downtime runs on the first tick back. Runs are jittered, deferred while the scraper is at its concurrency cap, and backed off exponentially on failure; a watch is marked `broken` after `SCHEDULER_MAX_FAILURES` consecutive failures. Set `SCHEDULER_ENABLED=false` to run the API without recurring checks.
 
 ---
 
@@ -121,6 +136,15 @@ The diff is a deterministic paragraph-level comparison (`backend/diff.js`) with 
 - `MAX_CONCURRENT_SCRAPES`: Simultaneous browser scrapes before returning 503 (default: 3)
 - `SCREENSHOT_TTL_MS`: How long screenshots are kept before cleanup (default: 3600000)
 - `TRUST_PROXY`: Set (e.g. `1`) when running behind a reverse proxy so rate limits use the real client IP
+- `SCHEDULER_ENABLED`: Set to `false` to run the API without recurring checks (default: enabled)
+- `SCHEDULER_TICK_MS`: How often the scheduler asks the database what is due (default: 60000)
+- `SCHEDULER_BATCH_SIZE`: Max watches checked per tick (default: 5)
+- `SCHEDULER_JITTER_RATIO`: Spread applied to each reschedule so watches do not fire in lockstep (default: 0.1)
+- `SCHEDULER_MAX_FAILURES`: Consecutive failures before a watch is marked `broken` (default: 5)
+- `SCHEDULER_BACKOFF_BASE_MS` / `SCHEDULER_BACKOFF_MAX_MS`: Exponential retry backoff bounds (defaults: 300000 / 21600000)
+- `EXPLAIN_ENABLED`: Set to `false` to record changes without calling the LLM (default: enabled)
+- `EXPLAIN_MAX_PARAGRAPHS`: Diffs larger than this are recorded as a layout change without a model call (default: 40)
+- `EXPLAIN_MAX_CHARS`: Character budget for the explainer prompt (default: 8000)
 
 See `backend/.env.example` for a ready-to-copy template.
 

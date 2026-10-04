@@ -57,7 +57,7 @@ Order reflects dependencies.
 2. ✅ **Snapshot pipeline:** fetch via the guarded proxy, extract main text, normalise, take a screenshot, and store a new snapshot only when the content hash changes. (Size caps and a retention policy are not built yet.)
 3. ✅ **Diff engine (no LLM):** paragraph-level diff with noise filtering. (Not yet tuned against a corpus of 20-30 real ToS and pricing pages — only unit-tested on synthetic examples.)
 4. ✅ **Scheduler:** jittered runs that survive restarts, respect the scrape concurrency cap, back off on failures, and mark a watch "broken" after repeated failures. (Scheduling state is persisted in `watches.next_check_at`/`failure_count`, so a watch due during downtime runs on the first tick back.)
-5. **Explainer:** runs only when a real diff exists. Classifies each change (price, fees, cancellation, data use, cosmetic) and explains it with quoted text; output is validated against the diff.
+5. ✅ **Explainer:** runs only when a real diff exists. Classifies each change (price, fees, cancellation, data use, cosmetic) and explains it with quoted text; output is validated against the diff. (The model is given numbered diff paragraphs and replies with indices, so a quote it did not receive cannot be expressed; a diff above `EXPLAIN_MAX_PARAGRAPHS` is labelled `layout_change` without calling the model. Prompt not yet tuned against a real corpus — see step 3.)
 6. **Alerts:** email and RSS **(open)**, with links to before/after and screenshots. Deduplicated.
 7. **UI:** watchlist, per-watch change timeline, diff viewer, and thumbs up/down on alerts stored as feedback. Clear messaging when a page cannot be read (login required, bot protection, heavy JavaScript).
 

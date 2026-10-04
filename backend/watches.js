@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const { getDb } = require('./db');
 const scraper = require('./scraper');
 const { computeDiff } = require('./diff');
+const { explainChange } = require('./explainer');
 
 const router = express.Router();
 
@@ -143,16 +144,61 @@ router.get('/:id/changes', (req, res) => {
   const watch = getWatchOr404(req, res);
   if (!watch) return;
   const rows = getDb()
-    .prepare('SELECT id, from_snapshot_id, to_snapshot_id, diff_json, created_at FROM changes WHERE watch_id = ? ORDER BY created_at DESC')
+    .prepare(
+      `SELECT id, from_snapshot_id, to_snapshot_id, diff_json, created_at,
+              category, summary, quotes_json, explained_at, explain_error
+       FROM changes WHERE watch_id = ? ORDER BY created_at DESC`
+    )
     .all(watch.id);
   res.json(rows.map((r) => ({
     id: r.id,
     fromSnapshotId: r.from_snapshot_id,
     toSnapshotId: r.to_snapshot_id,
     diff: JSON.parse(r.diff_json),
-    createdAt: r.created_at
+    createdAt: r.created_at,
+    // Explanation fields. `summary` is null when the change has not been
+    // explained, or when the explanation failed verification.
+    category: r.category,
+    summary: r.summary,
+    quotes: r.quotes_json ? JSON.parse(r.quotes_json) : [],
+    explainedAt: r.explained_at,
+    explainError: r.explain_error
   })));
 });
+
+// Asks the LLM to describe a change that is already stored, and records the
+// answer on that change.
+//
+// Deliberately best-effort: the change is the fact, the explanation is only
+// commentary on top of it. A model outage must never undo a detection the diff
+// already proved, so every failure is caught and written to `explain_error`
+// instead of propagating. The row always survives.
+async function explainStoredChange(changeId, changes) {
+  if (process.env.EXPLAIN_ENABLED === 'false') return null;
+
+  const db = getDb();
+  try {
+    const explanation = await explainChange(changes);
+    db.prepare(
+      `UPDATE changes
+       SET category = ?, summary = ?, quotes_json = ?, explained_at = ?, diff_hash = ?, explain_error = NULL
+       WHERE id = ?`
+    ).run(
+      explanation.category,
+      explanation.summary,
+      JSON.stringify(explanation.quotes || []),
+      Date.now(),
+      explanation.diffHash || null,
+      changeId
+    );
+    return explanation;
+  } catch (err) {
+    const message = String((err && err.message) || err).slice(0, 500);
+    console.warn(`[explainer] change ${changeId} could not be explained: ${message}`);
+    db.prepare('UPDATE changes SET explain_error = ? WHERE id = ?').run(message, changeId);
+    return null;
+  }
+}
 
 // Runs the snapshot pipeline for one watch: fetch -> hash -> store only on
 // change -> diff against the previous snapshot. The scheduler calls this on
@@ -187,6 +233,9 @@ async function runCheck(watchId) {
         .prepare('INSERT INTO changes (watch_id, from_snapshot_id, to_snapshot_id, diff_json, created_at) VALUES (?, ?, ?, ?, ?)')
         .run(watchId, latest.id, snapshotId, JSON.stringify(diffResult.changes), now);
       change = { id: changeResult.lastInsertRowid, changes: diffResult.changes };
+
+      const explanation = await explainStoredChange(change.id, diffResult.changes);
+      if (explanation) change.explanation = explanation;
     }
   }
 

@@ -9,9 +9,24 @@ const dbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'watchdog-test-'));
 process.env.DB_PATH = path.join(dbDir, 'test.db');
 process.env.GROQ_API_KEY = 'test-key';
 
+const axios = require('axios');
 const scraper = require('./scraper');
 const { app } = require('./index');
 const { closeDb } = require('./db');
+
+// Stands in for Groq so no test reaches the network. `reply` is the raw model
+// text, or an Error to simulate the provider being down.
+function mockModel(t, reply) {
+  const calls = [];
+  t.mock.method(axios, 'post', async (_url, body) => {
+    calls.push(body);
+    if (reply instanceof Error) throw reply;
+    return { data: { choices: [{ message: { content: reply } }] } };
+  });
+  return calls;
+}
+
+const explanation = (obj) => JSON.stringify(obj);
 
 let server;
 let base;
@@ -112,6 +127,11 @@ test('POST /watches/:id/check stores a snapshot only on first run, then diffs on
   assert.equal(snapshotsAfterRepeat.length, 1);
 
   // A real content change produces a new snapshot and a recorded diff.
+  mockModel(t, explanation({
+    category: 'price',
+    summary: 'The monthly price rose from $10 to $15.',
+    quote_ids: [1, 2]
+  }));
   t.mock.method(scraper, 'captureSnapshot', async () => ({ content: 'Price: $15/month.', screenshotPath: null }));
   const changed = await (await post(`/watches/${created.id}/check`)).json();
   assert.equal(changed.changed, true);
@@ -127,6 +147,120 @@ test('POST /watches/:id/check stores a snapshot only on first run, then diffs on
 
   const snapshotsFinal = await (await get(`/watches/${created.id}/snapshots`)).json();
   assert.equal(snapshotsFinal.length, 2);
+});
+
+test('a detected change is stored with its explanation and quoted evidence', async (t) => {
+  t.mock.method(scraper, 'validateScrapeUrl', async (url) => ({ ok: true, parsedUrl: url }));
+  const created = await (await post('/watches', { url: 'https://explain.test/terms', frequency: 'daily' })).json();
+
+  t.mock.method(scraper, 'captureSnapshot', async () => ({ content: 'Cancellation fee: none.', screenshotPath: null }));
+  await post(`/watches/${created.id}/check`);
+
+  const calls = mockModel(t, explanation({
+    category: 'cancellation',
+    summary: 'Cancelling now costs $25, where it used to be free.',
+    quote_ids: [1, 2]
+  }));
+  t.mock.method(scraper, 'captureSnapshot', async () => ({ content: 'Cancellation fee: $25.', screenshotPath: null }));
+  await post(`/watches/${created.id}/check`);
+
+  assert.equal(calls.length, 1, 'the model is called once for one change');
+
+  const [change] = await (await get(`/watches/${created.id}/changes`)).json();
+  assert.equal(change.category, 'cancellation');
+  assert.equal(change.summary, 'Cancelling now costs $25, where it used to be free.');
+  // Quotes come from the diff, not from the model's reply.
+  assert.deepEqual(change.quotes, ['Cancellation fee: none.', 'Cancellation fee: $25.']);
+  assert.ok(change.explainedAt);
+  assert.equal(change.explainError, null);
+});
+
+test('an unverifiable explanation is dropped but the change survives', async (t) => {
+  t.mock.method(scraper, 'validateScrapeUrl', async (url) => ({ ok: true, parsedUrl: url }));
+  const created = await (await post('/watches', { url: 'https://unverified.test', frequency: 'daily' })).json();
+
+  t.mock.method(scraper, 'captureSnapshot', async () => ({ content: 'Price: $10/month.', screenshotPath: null }));
+  await post(`/watches/${created.id}/check`);
+
+  // The model asserts a figure that is nowhere in the diff.
+  mockModel(t, explanation({
+    category: 'price',
+    summary: 'The price jumped to "$99/month" overnight.',
+    quote_ids: [1, 2]
+  }));
+  t.mock.method(scraper, 'captureSnapshot', async () => ({ content: 'Price: $12/month.', screenshotPath: null }));
+  await post(`/watches/${created.id}/check`);
+
+  const [change] = await (await get(`/watches/${created.id}/changes`)).json();
+  // The fabricated claim is discarded...
+  assert.equal(change.summary, null);
+  assert.equal(change.category, null);
+  // ...but the diff that proved the change is intact.
+  assert.deepEqual(change.diff, [
+    { type: 'removed', text: 'Price: $10/month.' },
+    { type: 'added', text: 'Price: $12/month.' }
+  ]);
+});
+
+test('a change is still recorded when the model is unreachable', async (t) => {
+  t.mock.method(scraper, 'validateScrapeUrl', async (url) => ({ ok: true, parsedUrl: url }));
+  const created = await (await post('/watches', { url: 'https://outage.test', frequency: 'daily' })).json();
+
+  t.mock.method(scraper, 'captureSnapshot', async () => ({ content: 'Free trial: 30 days.', screenshotPath: null }));
+  await post(`/watches/${created.id}/check`);
+
+  mockModel(t, new Error('connect ECONNREFUSED'));
+  t.mock.method(scraper, 'captureSnapshot', async () => ({ content: 'Free trial: 7 days.', screenshotPath: null }));
+  const res = await post(`/watches/${created.id}/check`);
+
+  // The check itself must still succeed: detection does not depend on the LLM.
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.ok(body.change, 'the change is reported despite the model failing');
+
+  const [change] = await (await get(`/watches/${created.id}/changes`)).json();
+  assert.equal(change.summary, null);
+  assert.match(change.explainError, /ECONNREFUSED/);
+  assert.deepEqual(change.diff, [
+    { type: 'removed', text: 'Free trial: 30 days.' },
+    { type: 'added', text: 'Free trial: 7 days.' }
+  ]);
+});
+
+test('EXPLAIN_ENABLED=false detects changes without calling the model', async (t) => {
+  t.mock.method(scraper, 'validateScrapeUrl', async (url) => ({ ok: true, parsedUrl: url }));
+  const created = await (await post('/watches', { url: 'https://disabled.test', frequency: 'daily' })).json();
+
+  t.mock.method(scraper, 'captureSnapshot', async () => ({ content: 'Plan: Basic.', screenshotPath: null }));
+  await post(`/watches/${created.id}/check`);
+
+  const calls = mockModel(t, explanation({ category: 'price', summary: 'x', quote_ids: [1] }));
+  process.env.EXPLAIN_ENABLED = 'false';
+  t.after(() => { delete process.env.EXPLAIN_ENABLED; });
+
+  t.mock.method(scraper, 'captureSnapshot', async () => ({ content: 'Plan: Pro.', screenshotPath: null }));
+  await post(`/watches/${created.id}/check`);
+
+  assert.equal(calls.length, 0, 'no LLM call when explanations are disabled');
+  const [change] = await (await get(`/watches/${created.id}/changes`)).json();
+  assert.equal(change.summary, null);
+  assert.ok(change.diff.length, 'the change is still detected and stored');
+});
+
+test('an unchanged page never reaches the model', async (t) => {
+  t.mock.method(scraper, 'validateScrapeUrl', async (url) => ({ ok: true, parsedUrl: url }));
+  const created = await (await post('/watches', { url: 'https://static.test', frequency: 'daily' })).json();
+
+  t.mock.method(scraper, 'captureSnapshot', async () => ({ content: 'Terms unchanged since 2019.', screenshotPath: null }));
+  await post(`/watches/${created.id}/check`);
+
+  // Mock the model only now, so any call below would be a real one.
+  const calls = mockModel(t, explanation({ category: 'price', summary: 'x', quote_ids: [1] }));
+  const repeat = await (await post(`/watches/${created.id}/check`)).json();
+
+  assert.equal(repeat.changed, false);
+  // This is the cost guarantee: a stable page costs nothing to watch.
+  assert.equal(calls.length, 0);
 });
 
 test('POST /watches/:id/check surfaces scrape failures as 502', async (t) => {

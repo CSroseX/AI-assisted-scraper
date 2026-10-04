@@ -4,16 +4,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Branches and direction
 
-`master` is the integration branch; work lands on `dev` and merges via PR. **`origin/dev` is ahead of `master`** with a frontend refactor, a test/CI expansion, and `docs/PLAN.md`. Run `git fetch` before trusting a local view — the local checkout has been stale by several commits.
+`master` is the integration branch; work lands on a feature branch and merges via PR. `dev` and `phase-1` are both **behind** `master` now and are stale — don't branch from them. Run `git fetch` before trusting a local view.
 
-`docs/PLAN.md` (on `dev`) is the product direction and it **pivots the project**: from a scrape-and-rewrite demo to a **watchdog for ToS/pricing pages** that snapshots URLs on a schedule and alerts on meaningful changes. Consequences for anyone touching this code:
+`docs/PLAN.md` is the product direction, and it **pivoted the project**: from a scrape-and-rewrite demo to a **watchdog for ToS/pricing pages** that snapshots URLs on a schedule and alerts on meaningful changes. Phase 0 and Phase 1 steps 0–4 are done and merged.
 
-- The **Flask RL service is slated for removal** ✅ — the RL approach was dropped (issue #6, closed as not planned). Thumbs up/down become plain stored feedback used to tune thresholds, not a learning signal.
-- The **ChromaDB version service is slated for removal** ✅, replaced by SQLite (`users`, `watches`, `snapshots`, `changes`, `alerts`, `feedback`).
-- The **Express backend, the hardened scraper, the Groq client and the React shell are keepers.** The scraper hardening is described in the plan as the project's core asset.
-- Phase 1 step 0 is explicitly the cleanup of the RL and Chroma services. ✅
+Its governing principle for new work: **detect deterministically, explain with the LLM** — changes come from a plain diff, the model only classifies and explains, and every claim must quote text present in the diff or be dropped.
 
-So prefer not to invest in the RL or Chroma paths unless asked. Its governing principle for new work: **detect deterministically, explain with the LLM** — changes come from a plain diff, the model only classifies and explains, and every claim must quote text present in the diff or be dropped.
+### What's built vs. what's left
+
+Built: RL/Chroma cleanup, SQLite storage + watches API, snapshot pipeline, diff engine with noise filtering, persistent scheduler, LLM explainer.
+
+Remaining in Phase 1 — **this is where new work goes**:
+
+- **Step 6, Alerts.** Email, and RSS is still **(open)** in the plan. Needs the `alerts` and `feedback` tables, which **do not exist yet** (see `MIGRATIONS` in `backend/db.js` — only `watches`, `snapshots`, `changes`). Must deduplicate, and must link back to before/after snapshots and screenshots so a user can verify the claim. `changes.diff_hash` already exists for deduplication.
+- **Step 7, UI.** The frontend is **still the original chat demo** and has had no watchdog work at all — no watch list, no change timeline, no diff viewer, no feedback thumbs. Also needs honest failure messaging: many ToS pages sit behind logins or bot protection, and the system should say *why* a page can't be read rather than failing quietly.
+
+The `users` table and snapshot retention/size caps are also unbuilt. Accounts are Phase 2 — there is a single implicit owner for now, and no `users` table.
 
 ## Commands
 
@@ -22,98 +28,143 @@ So prefer not to invest in the RL or Chroma paths unless asked. Its governing pr
 npm install
 npm start                      # dev server on :3000
 npm run build
-npm run lint                   # eslint src --max-warnings=0   (dev branch)
-npm run test:ci                # single run, no watch           (dev branch)
+npm run lint                   # eslint src --max-warnings=0
+npm run test:ci                # single run, no watch
 npm test -- --watchAll=false -t "renders app title"   # single test by name
 ```
 
-### Backend (`backend/`, Express + Playwright)
+### Backend (`backend/`, Express + Playwright + SQLite)
 ```bash
 cd backend
 npm install
-npm start                                  # :5000
+npm start                                  # :5000, starts the scheduler too
 npm run dev                                # nodemon
-npm test                                   # node:test runner (no jest/mocha)
+npm test                                   # node:test runner (no jest/mocha); 107 tests
 node --test ssrf.test.js                   # single file
 node --test --test-name-pattern "isPrivateIPv4" ssrf.test.js   # single test
-npm exec playwright install chromium       # required once before /scrape works
+npm exec playwright install chromium       # required once before scraping works
 ```
 
-### Python services (`backend/chroma_service/`)
-Two services share this directory with **separate** requirement files; install per service.
-```bash
-pip install -r requirements-fastapi.txt
-python -m uvicorn main:app --host 0.0.0.0 --port 8001   # version service
+`better-sqlite3` is a native module, so `npm ci` compiles it; CI sets `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1` because no test launches a browser (the scraper is always injected or stubbed).
 
-pip install -r requirements-rl.txt
-python rl_backend.py                                    # RL service on :5050
-
-# dev branch adds tests + lint:
-pip install -r requirements-test.txt
-ruff check backend/chroma_service                       # line-length 120, rules E,F
-cd backend/chroma_service && python -m pytest -q
-python -m pytest -q tests/test_versions.py::test_name   # single test
-```
+Set `SCHEDULER_ENABLED=false` to run the API without recurring checks.
 
 ### All services
 ```bash
-cp backend/.env.example backend/.env   # then set GROQ_API_KEY + CLEAR_API_TOKEN
+cp backend/.env.example backend/.env   # then set GROQ_API_KEY
 docker-compose up --build
 ```
 
 ### CI
-`.github/workflows/ci.yml` runs three jobs on push to `main`/`master`/`dev` and on PRs: **backend** (`npm test` with `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1`), **python** (`ruff check` + `pytest`), **frontend** (`lint` + `test:ci` + `build` with `CI=true`, so warnings fail the build). The backend job is the only one on `master`; the python and frontend jobs arrive with `dev`.
+`.github/workflows/ci.yml` runs two jobs on push to `main`/`master`/`dev` and on PRs: **backend** (`npm test`) and **frontend** (`lint` + `test:ci` + `build` with `CI=true`, so warnings fail the build). The python job is gone along with the Python services. Concurrency is grouped per ref with `cancel-in-progress`.
 
 ## Architecture
 
-Four services. The Express backend is the only one the frontend uses for scraping/LLM/versioning; the RL service is called **directly from the browser**.
+**Two services.** The React frontend talks only to the Express backend.
 
 ```
 React (:3000)
-  ├── REACT_APP_API_BASE  → Express (:5000) ──┬── Playwright chromium → guard proxy (127.0.0.1, random port)
-  │                                            ├── Groq API (all LLM calls)
-  │                                            └── proxy → FastAPI (:8001) → ChromaDB
-  └── REACT_APP_RL_BASE   → Flask RL (:5050)   (review + feedback, bypasses Express)
+  └── REACT_APP_API_BASE → Express (:5000) ──┬── Playwright chromium → guard proxy (127.0.0.1, random port)
+                                              ├── Groq API (all LLM calls)
+                                              └── SQLite (better-sqlite3, DB_PATH)
+                                             + scheduler (setInterval heartbeat, state in SQLite)
 ```
 
-### The pipeline
-URL submit drives a fixed chain: `/scrape` → `/spin` (AI Writer, Groq) → `POST /version` as `editor: 'ai-writer'` → RL `/review` (AI Reviewer). Thumbs/feedback POST a reward to RL `/feedback` keyed by `review_id`, re-run `/review`, and save the result as `editor: 'ai-reviewer'`. User edits save as `editor: 'user'` with `parent_version` set to the previous version id.
+The Flask RL service and the FastAPI/ChromaDB version service were **deleted** (commit `5121ef9`); `backend/chroma_service/` no longer exists. Don't reintroduce either. Version history, thumbs-up/down feedback and change records all belong in SQLite.
 
-Messages are tagged with a `type` field (`'loader'`, `'spunContent'`, `'reviewedContent'`) and the UI finds the relevant one by scanning **backwards** for the last match — keep that convention when adding message kinds.
+### The watchdog pipeline (the product)
 
-### Frontend layout
-On `master` this is one ~800-line `src/App.js`. **On `dev` it is refactored** to ~113 lines that compose extracted pieces — write new frontend code in that shape:
+`backend/watches.js` → `runCheck(watchId)` is the core, and both the scheduler and `POST /watches/:id/check` call it:
 
-- `src/config.js` — `API_BASE`/`RL_BASE` + `apiUrl()`/`rlUrl()` helpers
-- `src/api/client.js` — all `fetch` calls
-- `src/hooks/` — `useSessions`, `useScrapeWorkflow` (the pipeline), `useVersionHistory`, `useReviewFeedback`, `useSpunEditor`, `useNotifications`
-- `src/components/` — modals, header, chat input, options bar, toast, spun editor
-- `src/utils/` — `messages.js` (incl. `findLastIndexByType`), `markdown.js`, `url.js`, `errors.js`
+1. Fetch via `scraper.captureSnapshot` (guarded browser, optional CSS selector, full-page screenshot).
+2. SHA-256 the extracted text. **If the hash matches the latest snapshot, stop** — no row is written.
+3. Otherwise insert a `snapshots` row.
+4. If a previous snapshot existed, run `computeDiff`; insert a `changes` row only when `hasMeaningfulChange`.
 
-`src/setupTests.js` stubs `HTMLElement.prototype.scrollIntoView` because jsdom lacks it and `Chat` calls it to follow new messages.
+5. Explain the change with the LLM (`explainStoredChange`), writing the result onto the `changes` row.
+
+So `snapshots` rows mean "content changed"; `changes` rows mean "changed in a way that survived noise filtering". The explainer runs only at step 5, after the diff has proved a change — never before.
+
+Text extraction prefers the watch's `selector`, falls back to `<main>`, then `document.body` (`backend/scraper.js`).
+
+### Diff engine (`backend/diff.js`)
+Paragraph-level LCS, then noise filtering — no LLM, by design. Paragraphs split on blank lines, whitespace collapsed so rewrapping isn't a change. `NOISE_PATTERNS` drops timestamps, `© <year>` footers, "last updated" lines, live counters and loading text. Returns `{ changes, hasMeaningfulChange }` with unchanged paragraphs dropped.
+
+Per the plan this is **not yet tuned against a real corpus** (20–30 actual ToS/pricing pages) — only synthetic unit tests. Noise filtering is explicitly called "the product", so tuning it against real pages is high-value work.
+
+### Explainer (`backend/explainer.js`)
+The LLM half of the principle. Runs only on a diff the engine already proved, and classifies into `price | fees | cancellation | data_use | cosmetic`.
+
+**The model is never asked to quote.** It receives numbered diff paragraphs (`[1] REMOVED: ...`) and replies with `quote_ids`, which we resolve against our own array. A fabricated quote is therefore not merely detected but *impossible to express* — the model can only point at text we already hold. Keep this property if you change the prompt: the moment the model is asked for quote text, the guarantee is gone.
+
+- `validateExplanation` is the gate; nothing reaches storage without passing it. Out-of-range ids are discarded; **no surviving ids means no evidence, so the summary is dropped**; an unknown category becomes `null`; and any `"quoted span"` inside the summary must occur in the diff (this catches a figure invented in prose, e.g. claiming `$15` when the diff only says `$10`→`$12`).
+- `explainChange(changes, { callModel })` injects the model call, so **every test runs offline**. Follow that seam — no test should hit the network.
+- **Triage is the cost guarantee:** a diff above `EXPLAIN_MAX_PARAGRAPHS` (40) is labelled `layout_change` with **no LLM call at all**, since a redesign is not a price change and no sentence summarises it. A test asserts the model was never called; that assertion *is* the guarantee.
+- JSON parsing is defensive (first `{...}` block, try/catch) because models wrap JSON in prose or fences. A parse failure is an unverified explanation, never a throw.
+- `EXPLAIN_ENABLED=false` runs detection with no LLM, for working without a `GROQ_API_KEY`.
+
+`explainStoredChange` in `watches.js` is **deliberately best-effort**: the change row is written *first*, then explained, and every failure is caught into `explain_error`. A model outage must never roll back a detection the diff proved — that would break "detect deterministically". `summary` being `NULL` means unexplained or unverified; the diff is still there either way.
+
+`backend/groq.js` holds `callGroq`, `withRetries` and `clampTextForModel` as a leaf module. They used to live in `index.js`, but `index.js` requires `watches.js` which requires `explainer.js`, so keeping them there would be a circular import. `index.js` re-exports them, so existing test imports still work.
+
+### Scheduler (`backend/scheduler.js`)
+**Scheduling state lives in SQLite, never in memory** — that's the design constraint. `watches.next_check_at` and `watches.failure_count` are the source of truth; `setInterval` is only a heartbeat that asks the DB what's due, so a restart can't lose state and a watch whose due time passed during downtime runs on the first tick back.
+
+- `tick()` takes `{ now, runCheck, busy, rand }` as injected deps so the whole loop is testable without a browser — keep that seam when extending it.
+- Defers entirely while `scraper.scraperBusy()`, and re-checks between watches because a manual `/check` may have taken the last slot.
+- Success reschedules one interval out with ±`JITTER_RATIO` jitter so watches created together don't fire in lockstep forever.
+- Failure backs off exponentially (capped), and flips `status` to `broken` at `SCHEDULER_MAX_FAILURES`. One failing watch doesn't stop the rest of the batch.
+- `PATCH /watches/:id` back to `active` clears `failure_count` and resets `next_check_at` to now, so resuming doesn't leave a watch parked at a far-future due time.
+- `GET /scheduler/status` reports per-status counts, due-now count and the next 10 upcoming checks.
+
+### Storage (`backend/db.js`)
+Single better-sqlite3 file at `DB_PATH` (`/data/watchdog.db` under Compose, volume `watchdog_data`). WAL mode, `foreign_keys = ON`, so deleting a watch cascades its snapshots and changes.
+
+Migrations are two mechanisms: the `MIGRATIONS` array of idempotent `CREATE TABLE IF NOT EXISTS`, plus `ADDED_COLUMNS`, which exists because SQLite has no `ADD COLUMN IF NOT EXISTS` — each entry checks `PRAGMA table_info` before altering. **Add a new column there, not to the `CREATE TABLE` body**, or existing databases won't get it. New tables (`alerts`, `feedback`, `users`) go in `MIGRATIONS`.
 
 ### SSRF defense (`backend/ssrf.js`) — the security boundary
-Extracted into its own module and the most carefully built part of the codebase. Do not weaken it:
+The most carefully built part of the codebase, and the plan calls the hardened scraper the project's core asset. Do not weaken it:
 
 - A `net.BlockList` covers private, loopback, link-local (incl. the `169.254.169.254` cloud-metadata address), CGNAT, multicast, reserved and IPv6 ULA/site-local ranges. Both IP checks **fail closed** on malformed input, and `extractMappedIPv4` unwraps IPv4-mapped IPv6 (`::ffff:a.b.c.d`, including hex form) so a mapped private address cannot slip past.
 - `validateHostname` checks **every** resolved address, not just the first, and rejects `localhost`, `.localhost`, `.local`, `.internal`.
 - `createGuardProxy` is the key piece. Playwright's request interception is **not re-run for redirects the browser follows internally**, so route-based checks miss "public page → 302 → internal host". All browser traffic is routed through this local forward proxy, so every hop (initial request, redirect, iframe, subresource) is a fresh CONNECT/absolute-form request that gets re-vetted. It then **dials the already-vetted IP**, which also closes the DNS-rebinding window between check and use. Blocked plain-HTTP requests destroy the socket rather than returning an error page, so the browser reports a network error instead of letting an error page be scraped as content.
+- Chromium is launched with `--proxy-bypass-list=<-loopback>` because it otherwise bypasses proxies for loopback, which would hide `127.0.0.1` requests from the filter.
+
+Watch creation runs `validateScrapeUrl` up front and stores the normalized URL, so a watch can't be used to smuggle a blocked target past the check.
 
 ### Express backend (`backend/index.js`)
-- **`/ask` is the router.** `classifyIntentHeuristic` runs regex first and only falls back to a Groq classification call when it returns `'chat'`, avoiding an extra LLM round-trip. Intents are exactly `spin | chat | review | summarize`; each maps to a `handleX` that is also its own endpoint. The response carries `_routed_to` so the frontend knows which field (`spun`/`reply`/`reviewed`/`summary`) to read. Adding an intent means touching the heuristic, the classifier prompt, `routeToHandler`, and the frontend's route→field map.
-- **Abuse protection**, all env-tunable (see `.env.example`): a global `apiLimiter` plus a tighter `scrapeLimiter`, a JSON body limit, `MAX_CONCURRENT_SCRAPES` rejecting over-cap scrapes, and `cleanupScreenshots` on an interval (`.unref()`'d) expiring files past `SCREENSHOT_TTL_MS`.
+- **`/ask` is the router** (legacy demo surface, still live). `classifyIntentHeuristic` runs regex first and only falls back to a Groq classification call when it returns `'chat'`, avoiding an extra LLM round-trip. Intents are exactly `spin | chat | review | summarize`; each maps to a `handleX` that is also its own endpoint. The response carries `_routed_to` so the frontend knows which field (`spun`/`reply`/`reviewed`/`summary`) to read. Adding an intent means touching the heuristic, the classifier prompt, `routeToHandler`, and the frontend's route→field map.
+- **Abuse protection**, all env-tunable (see `.env.example`): a global `apiLimiter` plus a tighter `scrapeLimiter`, a JSON body limit, `MAX_CONCURRENT_SCRAPES` rejecting over-cap scrapes with 503 + `Retry-After`, and `cleanupScreenshots` on an interval (`.unref()`'d) expiring files past `SCREENSHOT_TTL_MS`. Note screenshots are **transient by design** — alerts linking to screenshots (step 6) will need a retention policy that outlives this TTL.
+- `sendScrapeError` is shared between `/scrape` and the watches pipeline so both report failures consistently. Extend it rather than duplicating error mapping — step 7's honest failure messaging belongs here.
 - `sanitizeHistory` bounds and validates chat history before it reaches the model; `clampTextForModel` caps content per call (12000 chars, 8000 for chat context) and reports `truncated`.
 - CORS is an explicit allowlist from `CORS_ALLOWED_ORIGINS`; no-`Origin` requests are allowed for health checks/curl. No wildcard path exists.
-- `app` is exported and `listen` is guarded by `require.main === module` so tests import without binding a port. The `module.exports` block also re-exports internals purely for unit tests — on `dev` that extends to `callGroq`, `routeToHandler` and every handler.
+- `app` is exported and `listen` is guarded by `require.main === module` so tests import without binding a port. The `module.exports` block also re-exports internals purely for unit tests, including `callGroq`, `routeToHandler` and every handler.
+- A graceful `SIGINT`/`SIGTERM` shutdown stops the scheduler, closes the browser and guard proxy, then closes the DB.
 
-### Version service (`backend/chroma_service/main.py`)
-FastAPI over a ChromaDB `PersistentClient` collection `chapter_versions` at `CHROMA_PERSIST_PATH` (volume `chroma_data`). Restore **appends** a new version whose `parent_version` is the restored id rather than mutating history. `/version/history` returns the **raw ChromaDB shape** (parallel `ids`/`metadatas`/`documents` arrays) which the frontend zips into objects. `parent_version` is `""` not `null` because Chroma metadata rejects nulls. `/version/clear` is gated by `compare_digest` against `CLEAR_API_TOKEN` and is not proxied through Express.
+### Watches API
+`backend/watches.js`, mounted at `/watches`. `POST` (validates url/frequency/selector, runs `validateScrapeUrl`, inserts due-immediately so the scheduler takes the baseline), `GET /`, `GET /:id`, `PATCH /:id` (status only), `DELETE /:id`, `GET /:id/snapshots`, `GET /:id/changes`, `POST /:id/check`. `getWatchOr404` centralizes id validation (400 on a malformed id, 404 on a missing one) — reuse it for new routes. Rows are serialized camelCase at the boundary; the DB uses snake_case.
 
-### RL service (`backend/chroma_service/rl_backend.py`)
-A two-armed epsilon-greedy bandit (0 = concise, 1 = detailed), **not** a trained model — reviews are templates rendered from word/sentence statistics, no LLM. State (`action_values`, `action_counts`, `review_store`) is in-process and **lost on restart**. Slated for removal per `docs/PLAN.md`.
+### Frontend layout
+~97-line `src/App.js` composing extracted pieces — write new frontend code in that shape:
+
+- `src/config.js` — `API_BASE` + `apiUrl()` helper (the RL base is gone)
+- `src/api/client.js` — all `fetch` calls
+- `src/hooks/` — `useSessions`, `useScrapeWorkflow` (the chat pipeline), `useWatchCheck`, `useSpunEditor`, `useNotifications`
+- `src/components/` — modals, header, chat input, options bar, toast, spun editor
+- `src/utils/` — `messages.js` (incl. `findLastIndexByType`), `markdown.js`, `url.js`, `errors.js`
+
+This is still largely the **demo chat UI**: submit URL → `/scrape` → `/spin`, then free-form chat through `/ask`. The version-history and review/feedback hooks were removed with the services behind them. Phase 1 step 7 replaces these screens with watch-centric ones; the hooks/components/utils split is the pattern to follow, not the chat flow itself.
+
+The one watchdog touchpoint is a **"Check for Changes" button** in `OptionsBar`, driving `useWatchCheck`: it creates a watch for the session's URL, runs a check now, and renders the newest change as a `ChangeExplanation` card in the chat. Both that hook and the card are marked disposable in their own comments — step 7 replaces them with a real watchlist and timeline, so don't build on them.
+
+Messages are tagged with a `type` field (`MESSAGE_TYPES` in `src/utils/messages.js`: `'loader'`, `'spunContent'`, `'changeExplanation'`) and the UI finds the relevant one by scanning **backwards** for the last match — keep that convention when adding message kinds.
+
+`Chat` renders a non-string `msg.content` through a plain `<span>`, so a React element can be passed as a message's content. That is how both `SpunEditor` and `ChangeExplanation` are injected without `Chat` knowing about either.
+
+`src/setupTests.js` stubs `HTMLElement.prototype.scrollIntoView` because jsdom lacks it and `Chat` calls it to follow new messages.
 
 ## Environment
 
-Backend reads `backend/.env` (gitignored; copy `backend/.env.example`). `GROQ_API_KEY` is required or every LLM endpoint fails; `CLEAR_API_TOKEN` must be set for `/version/clear` to work at all. `VERSION_API_BASE` must be `http://chromadb:8001` under Compose, `http://localhost:8001` otherwise. Frontend overrides `REACT_APP_API_BASE`/`REACT_APP_RL_BASE` are **inlined by CRA at build time**, so Docker images need them at build, not run.
+Backend reads `backend/.env` (gitignored; copy `backend/.env.example`). `GROQ_API_KEY` is required or every LLM endpoint fails. `DB_PATH` must be `/data/watchdog.db` under Compose so the volume persists it. Frontend overrides of `REACT_APP_API_BASE` are **inlined by CRA at build time**, so Docker images need them at build, not run.
 
 `PROJECT_FULL_DOCUMENTATION.md` is gitignored but present locally with detailed API/architecture notes.
