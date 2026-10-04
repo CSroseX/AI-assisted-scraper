@@ -38,6 +38,27 @@ const MIGRATIONS = [
   `
 ];
 
+// Columns added after the initial schema shipped. SQLite has no
+// "ADD COLUMN IF NOT EXISTS", so each is applied only when absent.
+const ADDED_COLUMNS = [
+  { table: 'watches', column: 'next_check_at', ddl: 'ALTER TABLE watches ADD COLUMN next_check_at INTEGER' },
+  { table: 'watches', column: 'last_checked_at', ddl: 'ALTER TABLE watches ADD COLUMN last_checked_at INTEGER' },
+  { table: 'watches', column: 'failure_count', ddl: 'ALTER TABLE watches ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0' },
+  { table: 'watches', column: 'last_error', ddl: 'ALTER TABLE watches ADD COLUMN last_error TEXT' }
+];
+
+function applyAddedColumns(database) {
+  for (const { table, column, ddl } of ADDED_COLUMNS) {
+    const existing = database.prepare(`PRAGMA table_info(${table})`).all();
+    if (!existing.some((col) => col.name === column)) {
+      database.exec(ddl);
+    }
+  }
+  // Watches created before the scheduler existed have no due time; make them
+  // due immediately so they are picked up on the first tick.
+  database.exec('UPDATE watches SET next_check_at = created_at WHERE next_check_at IS NULL');
+}
+
 let db = null;
 
 function getDb() {
@@ -51,6 +72,7 @@ function getDb() {
   for (const migration of MIGRATIONS) {
     db.exec(migration);
   }
+  applyAddedColumns(db);
 
   return db;
 }

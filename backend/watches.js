@@ -27,7 +27,11 @@ function serializeWatch(row) {
     frequency: row.frequency,
     status: row.status,
     createdAt: row.created_at,
-    updatedAt: row.updated_at
+    updatedAt: row.updated_at,
+    nextCheckAt: row.next_check_at,
+    lastCheckedAt: row.last_checked_at,
+    failureCount: row.failure_count,
+    lastError: row.last_error
   };
 }
 
@@ -65,9 +69,10 @@ router.post('/', async (req, res) => {
   }
 
   const now = Date.now();
+  // Due immediately: the scheduler takes the baseline snapshot on its next tick.
   const result = getDb()
-    .prepare('INSERT INTO watches (url, selector, frequency, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(urlCheck.parsedUrl, selector, frequency, 'active', now, now);
+    .prepare('INSERT INTO watches (url, selector, frequency, status, created_at, updated_at, next_check_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(urlCheck.parsedUrl, selector, frequency, 'active', now, now, now);
 
   const watch = getDb().prepare('SELECT * FROM watches WHERE id = ?').get(result.lastInsertRowid);
   res.status(201).json(serializeWatch(watch));
@@ -96,7 +101,16 @@ router.patch('/:id', (req, res) => {
     return res.status(400).json({ error: `status must be one of: ${STATUSES.join(', ')}` });
   }
 
-  getDb().prepare('UPDATE watches SET status = ?, updated_at = ? WHERE id = ?').run(status, Date.now(), watch.id);
+  const now = Date.now();
+  if (status === 'active') {
+    // Resuming a paused or broken watch clears its backoff so it runs again
+    // promptly rather than staying parked at a far-future due time.
+    getDb()
+      .prepare('UPDATE watches SET status = ?, failure_count = 0, last_error = NULL, next_check_at = ?, updated_at = ? WHERE id = ?')
+      .run(status, now, now, watch.id);
+  } else {
+    getDb().prepare('UPDATE watches SET status = ?, updated_at = ? WHERE id = ?').run(status, now, watch.id);
+  }
   const updated = getDb().prepare('SELECT * FROM watches WHERE id = ?').get(watch.id);
   res.json(serializeWatch(updated));
 });
@@ -141,9 +155,8 @@ router.get('/:id/changes', (req, res) => {
 });
 
 // Runs the snapshot pipeline for one watch: fetch -> hash -> store only on
-// change -> diff against the previous snapshot. This is what the scheduler
-// (not yet built) will call on each watch's cadence; exposed here so a check
-// can also be triggered manually.
+// change -> diff against the previous snapshot. The scheduler calls this on
+// each watch's cadence; exposed here so a check can also be triggered manually.
 async function runCheck(watchId) {
   const db = getDb();
   const watch = db.prepare('SELECT * FROM watches WHERE id = ?').get(watchId);
