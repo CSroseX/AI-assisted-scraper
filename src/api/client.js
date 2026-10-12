@@ -24,12 +24,34 @@ async function postJson(url, body, fallback) {
   return res.json();
 }
 
+async function getJson(url, fallback) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(await errorMessage(res, fallback));
+  return res.json();
+}
+
 // All functions below throw on failure; callers decide how to surface errors.
 
 export const scrapeUrl = (url) => postJson(apiUrl('/scrape'), { url }, 'Scraping failed');
 
 export const spinText = (text, prompt = DEFAULT_SPIN_PROMPT) =>
   postJson(apiUrl('/spin'), { text, prompt }, 'Spin failed');
+
+// --- Watches ----------------------------------------------------------------
+// The watchdog surface. Phase 1 step 7 builds the real screens on top of these.
+
+export const listWatches = () => getJson(apiUrl('/watches'), 'Could not load watches');
+
+export const createWatch = (url, frequency = 'daily', selector = null) =>
+  postJson(apiUrl('/watches'), { url, frequency, selector }, 'Could not create the watch');
+
+// Runs a check now instead of waiting for the watch's schedule.
+export const checkWatch = (id) =>
+  postJson(apiUrl(`/watches/${id}/check`), {}, 'Could not check the page');
+
+// Detected changes, newest first, each with its explanation when one verified.
+export const listChanges = (id) =>
+  getJson(apiUrl(`/watches/${id}/changes`), 'Could not load changes');
 
 // Calls /ask and returns route-aware response text.
 export async function askWithRouting(content, history, message) {

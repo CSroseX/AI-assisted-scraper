@@ -111,6 +111,12 @@ async function tick({ now = Date.now(), runCheck = watches.runCheck, busy = scra
       result.checked++;
       if (outcome && outcome.change) result.changed++;
     } catch (err) {
+      // A manual check is already covering this watch; that is not a failure.
+      // Left due, so the next tick re-runs it (a no-op if nothing changed).
+      if (err instanceof watches.CheckInProgressError) {
+        result.skipped++;
+        continue;
+      }
       const { broken } = recordFailure(watch, err, now);
       result.failed++;
       if (broken) {

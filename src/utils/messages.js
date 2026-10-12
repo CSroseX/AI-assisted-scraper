@@ -1,5 +1,14 @@
 export const LOADER_TEXT = {
-  writer: 'AI Writer is spinning the content...'
+  writer: 'AI Writer is spinning the content...',
+  explaining: 'Checking the page for changes...'
+};
+
+// Message `type` tags. The UI finds the one it wants by scanning backwards for
+// the last match (see findLastIndexByType), so adding a kind here is enough.
+export const MESSAGE_TYPES = {
+  loader: 'loader',
+  spunContent: 'spunContent',
+  changeExplanation: 'changeExplanation'
 };
 
 // Index of the last message with the given `type`, or -1.

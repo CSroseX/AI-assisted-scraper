@@ -1,6 +1,21 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { computeDiff, splitParagraphs, isNoise } = require('./diff');
+const { computeDiff, splitParagraphs, isNoise, hashChanges } = require('./diff');
+
+test('hashChanges is stable for the same diff and differs for another', () => {
+  const diff = [
+    { type: 'removed', text: 'Price: $10/month.' },
+    { type: 'added', text: 'Price: $12/month.' }
+  ];
+  assert.equal(hashChanges(diff), hashChanges([...diff]));
+  assert.notEqual(hashChanges(diff), hashChanges([{ type: 'added', text: 'other' }]));
+  // Direction matters: adding a paragraph is not the same change as removing it.
+  assert.notEqual(
+    hashChanges([{ type: 'added', text: 'x' }]),
+    hashChanges([{ type: 'removed', text: 'x' }])
+  );
+  assert.equal(typeof hashChanges([]), 'string');
+});
 
 test('splitParagraphs collapses whitespace and drops empties', () => {
   assert.deepEqual(splitParagraphs('  a  b \n\n\n  c  \n\n'), ['a b', 'c']);
