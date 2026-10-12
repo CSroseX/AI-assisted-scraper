@@ -16,7 +16,7 @@ Built: RL/Chroma cleanup, SQLite storage + watches API, snapshot pipeline, diff 
 
 Remaining in Phase 1 — **this is where new work goes**:
 
-- **Step 6, Alerts.** Decided: users choose email, RSS or both per watch. Email goes through nodemailer, configured by env vars, with a test inbox (Ethereal/Mailtrap) during development and a free-tier delivery service later. Email goes to one app-wide address held in settings until accounts exist. RSS is served both per watch and as one global feed. Needs the `alerts` and `feedback` tables, which **do not exist yet** (see `MIGRATIONS` in `backend/db.js` — only `watches`, `snapshots`, `changes`). Must link back to before/after snapshots and screenshots so a user can verify the claim. Deduplicate with a database uniqueness rule, not a check-then-insert in code. The rule must include `watch_id` as well as the channel, because `changes.diff_hash` is content-only and two pages with the same edit share a hash. Every change has a `diff_hash`: it is set at insert, and older rows are backfilled on DB open.
+- **Step 6, Alerts — storage done, delivery not.** Decided: users choose email, RSS or both per watch. Email goes through nodemailer, configured by env vars, with a test inbox (Ethereal/Mailtrap) during development and a free-tier delivery service later. Email goes to one app-wide address held in settings until accounts exist. RSS is served both per watch and as one global feed. Built: the `alerts` and `feedback` tables, per-watch channel flags, alert queueing and the feedback API (see "Alerts and feedback" below). **Still to build:** the RSS feeds, email sending, and links from each alert to before/after snapshots and screenshots so a user can verify the claim. Nothing is sent yet; every queued alert stays `pending`.
 - **Step 7, UI.** The frontend is **still the original chat demo** and has had no watchdog work at all — no watch list, no change timeline, no diff viewer, no feedback thumbs. Also needs honest failure messaging: many ToS pages sit behind logins or bot protection, and the system should say *why* a page can't be read rather than failing quietly.
 
 The `users` table and snapshot retention/size caps are also unbuilt. Accounts are Phase 2 — there is a single implicit owner for now, and no `users` table.
@@ -39,7 +39,7 @@ cd backend
 npm install
 npm start                                  # :5000, starts the scheduler too
 npm run dev                                # nodemon
-npm test                                   # node:test runner (no jest/mocha); 111 tests
+npm test                                   # node:test runner (no jest/mocha); 131 tests
 node --test ssrf.test.js                   # single file
 node --test --test-name-pattern "isPrivateIPv4" ssrf.test.js   # single test
 npm exec playwright install chromium       # required once before scraping works
@@ -120,9 +120,9 @@ The LLM half of the principle. Runs only on a diff the engine already proved, an
 - `GET /scheduler/status` reports per-status counts, due-now count and the next 10 upcoming checks.
 
 ### Storage (`backend/db.js`)
-Single better-sqlite3 file at `DB_PATH` (`/data/watchdog.db` under Compose, volume `watchdog_data`). WAL mode, `foreign_keys = ON`, so deleting a watch cascades its snapshots and changes.
+Single better-sqlite3 file at `DB_PATH` (`/data/watchdog.db` under Compose, volume `watchdog_data`). WAL mode, `foreign_keys = ON`, so deleting a watch cascades its snapshots, changes, alerts and feedback.
 
-Migrations are two mechanisms: the `MIGRATIONS` array of idempotent `CREATE TABLE IF NOT EXISTS`, plus `ADDED_COLUMNS`, which exists because SQLite has no `ADD COLUMN IF NOT EXISTS` — each entry checks `PRAGMA table_info` before altering. **Add a new column there, not to the `CREATE TABLE` body**, or existing databases won't get it. New tables (`alerts`, `feedback`, `users`) go in `MIGRATIONS`.
+Migrations are two mechanisms: the `MIGRATIONS` array of idempotent `CREATE TABLE IF NOT EXISTS`, plus `ADDED_COLUMNS`, which exists because SQLite has no `ADD COLUMN IF NOT EXISTS` — each entry checks `PRAGMA table_info` before altering. **Add a new column there, not to the `CREATE TABLE` body**, or existing databases won't get it. New tables (e.g. `users`) go in `MIGRATIONS` as a new array entry.
 
 ### SSRF defense (`backend/ssrf.js`) — the security boundary
 The most carefully built part of the codebase, and the plan calls the hardened scraper the project's core asset. Do not weaken it:
@@ -143,8 +143,19 @@ Watch creation runs `validateScrapeUrl` up front and stores the normalized URL, 
 - `app` is exported and `listen` is guarded by `require.main === module` so tests import without binding a port. The `module.exports` block also re-exports internals purely for unit tests, including `callGroq`, `routeToHandler` and every handler.
 - A graceful `SIGINT`/`SIGTERM` shutdown stops the scheduler, closes the browser and guard proxy, then closes the DB.
 
+### Alerts and feedback (`backend/alerts.js`)
+Each watch has two on/off flags, `alert_rss` (default on: it needs no setup and sends nothing) and `alert_email` (default off). The API exposes them as `alertChannels: ['email', 'rss']`.
+
+When `runCheck` records a change, `queueAlerts` writes one `alerts` row per enabled channel. **This happens in the same transaction as the snapshot and change inserts.** Writing only the snapshot would make the next check see identical content and stop early, losing the change and its alerts for good. The LLM explanation runs *after* the transaction, so the model stays out of it.
+
+Dedup has two layers:
+- **Hard:** a unique index on `(change_id, channel)`. A retry can never queue the same change twice on one channel.
+- **Soft:** a repeat of the same `diff_hash` on the same watch and channel within `ALERT_REPEAT_WINDOW_MS` (default 7 days) is stored as `suppressed` instead of `pending`. This stops a page that flips between two versions from alerting every check. Only non-suppressed rows open a window, so a flapping page re-alerts once per window, and a change that genuinely recurs later isn't lost. The check-then-insert is race-free because it runs inside the transaction and under `runCheck`'s per-watch lock.
+
+Alert statuses are `pending | sent | failed | suppressed`, and there are `attempts`/`last_error`/`sent_at` columns ready for delivery. `feedback` holds one `useful | noise` vote per change (`change_id` UNIQUE, upserted), and it rates the *change*, not the alert. The "fewer than 1 in 3 alerts marked noise" goal in PLAN.md is measured from it.
+
 ### Watches API
-`backend/watches.js`, mounted at `/watches`. `POST` (validates url/frequency/selector, runs `validateScrapeUrl`, inserts due-immediately so the scheduler takes the baseline), `GET /`, `GET /:id`, `PATCH /:id` (status only), `DELETE /:id`, `GET /:id/snapshots`, `GET /:id/changes`, `POST /:id/check`. `getWatchOr404` centralizes id validation (400 on a malformed id, 404 on a missing one) — reuse it for new routes. Rows are serialized camelCase at the boundary; the DB uses snake_case.
+`backend/watches.js`, mounted at `/watches`. `POST` (validates url/frequency/selector/`alertChannels`, runs `validateScrapeUrl`, inserts due-immediately so the scheduler takes the baseline), `GET /`, `GET /:id`, `PATCH /:id` (`status` and/or `alertChannels`; a bad field rejects the whole request), `DELETE /:id`, `GET /:id/snapshots`, `GET /:id/changes` (includes `feedback`), `PUT`/`DELETE /:id/changes/:changeId/feedback`, `GET /:id/alerts`, `POST /:id/check`. `getWatchOr404` centralizes id validation (400 on a malformed id, 404 on a missing one) — reuse it for new routes. Rows are serialized camelCase at the boundary; the DB uses snake_case.
 
 ### Frontend layout
 ~97-line `src/App.js` composing extracted pieces — write new frontend code in that shape:
