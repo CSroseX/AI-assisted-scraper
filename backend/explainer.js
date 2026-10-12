@@ -10,7 +10,6 @@
 // against our own array. A fabricated quote is therefore not merely detected,
 // it is impossible to express.
 
-const crypto = require('crypto');
 const { callGroq, clampTextForModel } = require('./groq');
 
 // Categories the model is allowed to choose from.
@@ -51,15 +50,6 @@ const SYSTEM_PROMPT = [
   'must appear in the numbered paragraphs. Cite the paragraph numbers rather than',
   'copying their text.'
 ].join('\n');
-
-// Stable fingerprint of a diff, so an explanation can be cached against it and
-// a retry never re-bills for work already done.
-function hashChanges(changes) {
-  const canonical = (Array.isArray(changes) ? changes : [])
-    .map((c) => `${c && c.type}:${c && c.text}`)
-    .join('\n');
-  return crypto.createHash('sha256').update(canonical).digest('hex');
-}
 
 // Renders the numbered block the model sees. Indices are 1-based because models
 // handle 1-based lists more reliably than 0-based ones.
@@ -160,10 +150,8 @@ async function explainChange(changes, { callModel = callGroq } = {}) {
   const list = Array.isArray(changes) ? changes.filter((c) => c && typeof c.text === 'string') : [];
 
   if (list.length === 0) {
-    return { ...unverified('empty_diff'), diffHash: hashChanges(list) };
+    return unverified('empty_diff');
   }
-
-  const diffHash = hashChanges(list);
 
   // Triage: too big to explain usefully, so do not pay to try.
   if (list.length > MAX_PARAGRAPHS) {
@@ -174,8 +162,7 @@ async function explainChange(changes, { callModel = callGroq } = {}) {
       // Nothing was claimed by a model, so there is nothing to verify.
       verified: true,
       skippedLlm: true,
-      reason: 'too_large',
-      diffHash
+      reason: 'too_large'
     };
   }
 
@@ -187,7 +174,7 @@ async function explainChange(changes, { callModel = callGroq } = {}) {
   ], 0.1);
 
   const result = validateExplanation(parseModelJson(content), list);
-  return { ...result, truncated, diffHash };
+  return { ...result, truncated };
 }
 
 module.exports = {
@@ -196,7 +183,6 @@ module.exports = {
   validateExplanation,
   parseModelJson,
   extractQuotedSpans,
-  hashChanges,
   CATEGORIES,
   LAYOUT_CHANGE,
   MAX_PARAGRAPHS,

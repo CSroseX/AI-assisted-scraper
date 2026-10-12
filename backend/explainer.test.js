@@ -7,7 +7,6 @@ const {
   validateExplanation,
   parseModelJson,
   extractQuotedSpans,
-  hashChanges,
   CATEGORIES,
   LAYOUT_CHANGE,
   MAX_PARAGRAPHS
@@ -196,14 +195,6 @@ test('null or non-object model output is unverified, not a crash', () => {
   }
 });
 
-// --- hashChanges ---------------------------------------------------------------
-
-test('hashChanges is stable for the same diff and differs for another', () => {
-  assert.equal(hashChanges(PRICE_DIFF), hashChanges([...PRICE_DIFF]));
-  assert.notEqual(hashChanges(PRICE_DIFF), hashChanges([{ type: 'added', text: 'other' }]));
-  assert.equal(typeof hashChanges([]), 'string');
-});
-
 // --- explainChange: orchestration ----------------------------------------------
 
 test('explainChange returns a verified explanation on a good model reply', async () => {
@@ -218,7 +209,6 @@ test('explainChange returns a verified explanation on a good model reply', async
   assert.equal(out.category, 'price');
   assert.deepEqual(out.quotes, ['Price: $10/month.', 'Price: $12/month.']);
   assert.equal(out.skippedLlm, false);
-  assert.equal(typeof out.diffHash, 'string');
   assert.equal(model.calls.length, 1);
 });
 

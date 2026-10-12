@@ -12,7 +12,12 @@ process.env.GROQ_API_KEY = 'test-key';
 const axios = require('axios');
 const scraper = require('./scraper');
 const { app } = require('./index');
-const { closeDb } = require('./db');
+const { getDb, closeDb } = require('./db');
+const { hashChanges } = require('./diff');
+
+// The fingerprint isn't part of the API response, so read it from the DB.
+const storedDiffHashes = (watchId) =>
+  getDb().prepare('SELECT diff_hash FROM changes WHERE watch_id = ?').all(watchId).map((r) => r.diff_hash);
 
 // Stands in for Groq so no test reaches the network. `reply` is the raw model
 // text, or an Error to simulate the provider being down.
@@ -225,6 +230,8 @@ test('a change is still recorded when the model is unreachable', async (t) => {
     { type: 'removed', text: 'Free trial: 30 days.' },
     { type: 'added', text: 'Free trial: 7 days.' }
   ]);
+  // The fingerprint must not depend on the model, or alerts could not be deduplicated.
+  assert.deepEqual(storedDiffHashes(created.id), [hashChanges(change.diff)]);
 });
 
 test('EXPLAIN_ENABLED=false detects changes without calling the model', async (t) => {
@@ -245,6 +252,71 @@ test('EXPLAIN_ENABLED=false detects changes without calling the model', async (t
   const [change] = await (await get(`/watches/${created.id}/changes`)).json();
   assert.equal(change.summary, null);
   assert.ok(change.diff.length, 'the change is still detected and stored');
+  assert.deepEqual(storedDiffHashes(created.id), [hashChanges(change.diff)]);
+});
+
+test('two overlapping checks of one watch record the change once', async (t) => {
+  t.mock.method(scraper, 'validateScrapeUrl', async (url) => ({ ok: true, parsedUrl: url }));
+  const created = await (await post('/watches', { url: 'https://race.test', frequency: 'daily' })).json();
+
+  t.mock.method(scraper, 'captureSnapshot', async () => ({ content: 'Price: $10/month.', screenshotPath: null }));
+  await post(`/watches/${created.id}/check`);
+
+  // Hold the first check mid-scrape so the second one arrives while it runs.
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let scrapeStarted;
+  const started = new Promise((resolve) => { scrapeStarted = resolve; });
+  t.mock.method(scraper, 'captureSnapshot', async () => {
+    scrapeStarted();
+    await gate;
+    return { content: 'Price: $12/month.', screenshotPath: null };
+  });
+  mockModel(t, new Error('model off for this test'));
+
+  const first = post(`/watches/${created.id}/check`);
+  await started;
+  const second = await post(`/watches/${created.id}/check`);
+  assert.equal(second.status, 409);
+  assert.equal(second.headers.get('retry-after'), '5');
+
+  release();
+  assert.equal((await first).status, 200);
+
+  const changes = await (await get(`/watches/${created.id}/changes`)).json();
+  assert.equal(changes.length, 1, 'the change is recorded exactly once');
+
+  // The lock is released afterwards, so a later check runs normally.
+  t.mock.method(scraper, 'captureSnapshot', async () => ({ content: 'Price: $12/month.', screenshotPath: null }));
+  assert.equal((await post(`/watches/${created.id}/check`)).status, 200);
+});
+
+test('a check that fails releases its lock', async (t) => {
+  t.mock.method(scraper, 'validateScrapeUrl', async (url) => ({ ok: true, parsedUrl: url }));
+  const created = await (await post('/watches', { url: 'https://lock-release.test', frequency: 'daily' })).json();
+
+  t.mock.method(scraper, 'captureSnapshot', async () => { throw new Error('boom'); });
+  assert.equal((await post(`/watches/${created.id}/check`)).status, 502);
+  assert.equal((await post(`/watches/${created.id}/check`)).status, 502, 'not 409: the failed check must not stay locked');
+});
+
+test('opening the database backfills fingerprints missing from older changes', async (t) => {
+  t.mock.method(scraper, 'validateScrapeUrl', async (url) => ({ ok: true, parsedUrl: url }));
+  const created = await (await post('/watches', { url: 'https://backfill.test', frequency: 'daily' })).json();
+
+  const diff = [{ type: 'added', text: 'New fee: $3.' }];
+  const db = getDb();
+  const now = Date.now();
+  const snap = db
+    .prepare('INSERT INTO snapshots (watch_id, content, content_hash, created_at) VALUES (?, ?, ?, ?)')
+    .run(created.id, 'New fee: $3.', 'h', now);
+  // Simulates a row written before fingerprints were stored at insert time.
+  db.prepare('INSERT INTO changes (watch_id, to_snapshot_id, diff_json, created_at) VALUES (?, ?, ?, ?)')
+    .run(created.id, snap.lastInsertRowid, JSON.stringify(diff), now);
+  assert.deepEqual(storedDiffHashes(created.id), [null]);
+
+  closeDb();
+  assert.deepEqual(storedDiffHashes(created.id), [hashChanges(diff)]);
 });
 
 test('an unchanged page never reaches the model', async (t) => {

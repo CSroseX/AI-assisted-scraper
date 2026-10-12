@@ -264,6 +264,26 @@ test('one failing watch does not stop the others in the batch', async () => {
   for (const w of [bad, good]) getDb().prepare('DELETE FROM watches WHERE id = ?').run(w.id);
 });
 
+test('a watch already being checked is skipped, not counted as a failure', async () => {
+  const { CheckInProgressError } = require('./watches');
+  const watch = makeWatch({ nextCheckAt: 100 });
+
+  const result = await scheduler.tick({
+    now: 500,
+    busy: neverBusy,
+    runCheck: async (id) => { throw new CheckInProgressError(id); }
+  });
+
+  assert.equal(result.skipped, 1);
+  assert.equal(result.failed, 0);
+  const after = readWatch(watch.id);
+  assert.equal(after.failure_count, 0);
+  assert.equal(after.last_error, null);
+  assert.equal(after.next_check_at, 100, 'stays due so the next tick picks it up');
+
+  getDb().prepare('DELETE FROM watches WHERE id = ?').run(watch.id);
+});
+
 // --- start/stop and status ------------------------------------------------
 
 test('start is idempotent and stop clears the timer', () => {

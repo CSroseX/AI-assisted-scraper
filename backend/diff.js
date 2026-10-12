@@ -2,6 +2,8 @@
 // No LLM involved: this is the "detect deterministically" half of the plan's
 // governing principle. The explainer (LLM) only runs on what this emits.
 
+const crypto = require('crypto');
+
 // Collapses whitespace so line-wrapping differences don't count as a change.
 function normalizeParagraph(text) {
   return String(text || '').replace(/\s+/g, ' ').trim();
@@ -88,4 +90,14 @@ function computeDiff(beforeText, afterText) {
   };
 }
 
-module.exports = { computeDiff, splitParagraphs, isNoise, diffParagraphs };
+// Fingerprint of a diff: the same set of changes always yields the same hash.
+// Computed here rather than in the explainer so every change gets one, even
+// when the model is down or disabled; alert deduplication depends on that.
+function hashChanges(changes) {
+  const canonical = (Array.isArray(changes) ? changes : [])
+    .map((c) => `${c && c.type}:${c && c.text}`)
+    .join('\n');
+  return crypto.createHash('sha256').update(canonical).digest('hex');
+}
+
+module.exports = { computeDiff, splitParagraphs, isNoise, diffParagraphs, hashChanges };

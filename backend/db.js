@@ -1,6 +1,7 @@
 const path = require('path');
 const fs = require('fs');
 const Database = require('better-sqlite3');
+const { hashChanges } = require('./diff');
 
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data', 'watchdog.db');
 
@@ -68,6 +69,16 @@ function applyAddedColumns(database) {
   database.exec('UPDATE watches SET next_check_at = created_at WHERE next_check_at IS NULL');
 }
 
+// Changes recorded before the fingerprint was computed at insert time only got
+// one when the explainer succeeded. Alert dedup needs it on every change.
+function backfillDiffHashes(database) {
+  const missing = database.prepare('SELECT id, diff_json FROM changes WHERE diff_hash IS NULL').all();
+  const update = database.prepare('UPDATE changes SET diff_hash = ? WHERE id = ?');
+  database.transaction(() => {
+    for (const row of missing) update.run(hashChanges(JSON.parse(row.diff_json)), row.id);
+  })();
+}
+
 let db = null;
 
 function getDb() {
@@ -82,6 +93,7 @@ function getDb() {
     db.exec(migration);
   }
   applyAddedColumns(db);
+  backfillDiffHashes(db);
 
   return db;
 }

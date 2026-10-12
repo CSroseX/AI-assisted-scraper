@@ -16,7 +16,7 @@ Built: RL/Chroma cleanup, SQLite storage + watches API, snapshot pipeline, diff 
 
 Remaining in Phase 1 — **this is where new work goes**:
 
-- **Step 6, Alerts.** Email, and RSS is still **(open)** in the plan. Needs the `alerts` and `feedback` tables, which **do not exist yet** (see `MIGRATIONS` in `backend/db.js` — only `watches`, `snapshots`, `changes`). Must deduplicate, and must link back to before/after snapshots and screenshots so a user can verify the claim. `changes.diff_hash` already exists for deduplication.
+- **Step 6, Alerts.** Decided: users choose email, RSS or both per watch. Email goes through nodemailer, configured by env vars, with a test inbox (Ethereal/Mailtrap) during development and a free-tier delivery service later. Email goes to one app-wide address held in settings until accounts exist. RSS is served both per watch and as one global feed. Needs the `alerts` and `feedback` tables, which **do not exist yet** (see `MIGRATIONS` in `backend/db.js` — only `watches`, `snapshots`, `changes`). Must link back to before/after snapshots and screenshots so a user can verify the claim. Deduplicate with a database uniqueness rule, not a check-then-insert in code. The rule must include `watch_id` as well as the channel, because `changes.diff_hash` is content-only and two pages with the same edit share a hash. Every change has a `diff_hash`: it is set at insert, and older rows are backfilled on DB open.
 - **Step 7, UI.** The frontend is **still the original chat demo** and has had no watchdog work at all — no watch list, no change timeline, no diff viewer, no feedback thumbs. Also needs honest failure messaging: many ToS pages sit behind logins or bot protection, and the system should say *why* a page can't be read rather than failing quietly.
 
 The `users` table and snapshot retention/size caps are also unbuilt. Accounts are Phase 2 — there is a single implicit owner for now, and no `users` table.
@@ -39,7 +39,7 @@ cd backend
 npm install
 npm start                                  # :5000, starts the scheduler too
 npm run dev                                # nodemon
-npm test                                   # node:test runner (no jest/mocha); 107 tests
+npm test                                   # node:test runner (no jest/mocha); 111 tests
 node --test ssrf.test.js                   # single file
 node --test --test-name-pattern "isPrivateIPv4" ssrf.test.js   # single test
 npm exec playwright install chromium       # required once before scraping works
@@ -79,7 +79,9 @@ The Flask RL service and the FastAPI/ChromaDB version service were **deleted** (
 1. Fetch via `scraper.captureSnapshot` (guarded browser, optional CSS selector, full-page screenshot).
 2. SHA-256 the extracted text. **If the hash matches the latest snapshot, stop** — no row is written.
 3. Otherwise insert a `snapshots` row.
-4. If a previous snapshot existed, run `computeDiff`; insert a `changes` row only when `hasMeaningfulChange`.
+4. If a previous snapshot existed, run `computeDiff`; insert a `changes` row only when `hasMeaningfulChange`, with its `diff_hash` (`hashChanges` in `diff.js`, no LLM).
+
+`runCheck` holds an in-memory per-watch lock: a second check of the same watch while one runs throws `CheckInProgressError` (manual `/check` → 409, scheduler → skipped). Without it, overlapping checks diff against the same old snapshot and record the change twice.
 
 5. Explain the change with the LLM (`explainStoredChange`), writing the result onto the `changes` row.
 

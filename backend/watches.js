@@ -2,7 +2,7 @@ const express = require('express');
 const crypto = require('crypto');
 const { getDb } = require('./db');
 const scraper = require('./scraper');
-const { computeDiff } = require('./diff');
+const { computeDiff, hashChanges } = require('./diff');
 const { explainChange } = require('./explainer');
 
 const router = express.Router();
@@ -181,14 +181,13 @@ async function explainStoredChange(changeId, changes) {
     const explanation = await explainChange(changes);
     db.prepare(
       `UPDATE changes
-       SET category = ?, summary = ?, quotes_json = ?, explained_at = ?, diff_hash = ?, explain_error = NULL
+       SET category = ?, summary = ?, quotes_json = ?, explained_at = ?, explain_error = NULL
        WHERE id = ?`
     ).run(
       explanation.category,
       explanation.summary,
       JSON.stringify(explanation.quotes || []),
       Date.now(),
-      explanation.diffHash || null,
       changeId
     );
     return explanation;
@@ -200,10 +199,32 @@ async function explainStoredChange(changeId, changes) {
   }
 }
 
+class CheckInProgressError extends Error {
+  constructor(watchId) {
+    super(`A check for watch ${watchId} is already running`);
+    this.name = 'CheckInProgressError';
+  }
+}
+
+// Two overlapping checks of one watch would both diff against the same old
+// snapshot and record the same change twice. In memory on purpose: a restart
+// ends every in-flight check, so there is nothing to persist.
+const checksInFlight = new Set();
+
 // Runs the snapshot pipeline for one watch: fetch -> hash -> store only on
 // change -> diff against the previous snapshot. The scheduler calls this on
 // each watch's cadence; exposed here so a check can also be triggered manually.
 async function runCheck(watchId) {
+  if (checksInFlight.has(watchId)) throw new CheckInProgressError(watchId);
+  checksInFlight.add(watchId);
+  try {
+    return await checkWatchNow(watchId);
+  } finally {
+    checksInFlight.delete(watchId);
+  }
+}
+
+async function checkWatchNow(watchId) {
   const db = getDb();
   const watch = db.prepare('SELECT * FROM watches WHERE id = ?').get(watchId);
   if (!watch) throw new Error('Watch not found');
@@ -230,8 +251,8 @@ async function runCheck(watchId) {
     const diffResult = computeDiff(latest.content, captured.content);
     if (diffResult.hasMeaningfulChange) {
       const changeResult = db
-        .prepare('INSERT INTO changes (watch_id, from_snapshot_id, to_snapshot_id, diff_json, created_at) VALUES (?, ?, ?, ?, ?)')
-        .run(watchId, latest.id, snapshotId, JSON.stringify(diffResult.changes), now);
+        .prepare('INSERT INTO changes (watch_id, from_snapshot_id, to_snapshot_id, diff_json, diff_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(watchId, latest.id, snapshotId, JSON.stringify(diffResult.changes), hashChanges(diffResult.changes), now);
       change = { id: changeResult.lastInsertRowid, changes: diffResult.changes };
 
       const explanation = await explainStoredChange(change.id, diffResult.changes);
@@ -256,6 +277,10 @@ router.post('/:id/check', async (req, res) => {
     const result = await runCheck(watch.id);
     res.json(result);
   } catch (err) {
+    if (err instanceof CheckInProgressError) {
+      res.set('Retry-After', '5');
+      return res.status(409).json({ error: 'This page is already being checked, please retry shortly.' });
+    }
     console.error('[watches/check] error:', err.message);
     res.status(502).json({ error: 'Could not check the watched page.' });
   }
@@ -263,4 +288,5 @@ router.post('/:id/check', async (req, res) => {
 
 module.exports = router;
 module.exports.runCheck = runCheck;
+module.exports.CheckInProgressError = CheckInProgressError;
 module.exports.hashContent = hashContent;
