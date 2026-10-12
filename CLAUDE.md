@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Branches and direction
 
-`master` is the integration branch; work lands on a feature branch off an up-to-date `master` and merges via PR. Merged branches (`Schedular`, `explainer`, `alerts`) and the stale `dev`/`phase-1` may still exist locally or on the remote. Don't branch from them. Run `git fetch` before trusting a local view.
+`master` is the integration branch; work lands on a feature branch off an up-to-date `master` and merges via PR. The `protect-master` ruleset enforces this with no bypass for anyone: no direct pushes or force pushes, squash merges only, and `backend (node)` and `frontend (react)` must pass on a branch that is up to date with `master`. Merged branches (`Schedular`, `explainer`, `alerts`) and the stale `dev`/`phase-1` may still exist locally or on the remote. Don't branch from them. Run `git fetch` before trusting a local view.
 
 The GitHub CLI is installed at `C:\Program Files\GitHub CLI\gh.exe` and logged in as `CSroseX` with `repo` and `workflow` scopes, so use it for PRs and CI status (`gh run list`). A shell that started before it was installed won't have it on `PATH`; call it by full path (`"/c/Program Files/GitHub CLI/gh.exe"` from Git Bash). The claude.ai GitHub connector can read this repo but gets a 403 when creating PRs.
 
@@ -69,6 +69,62 @@ Steps:
 - database and evidence backups, plus snapshot retention and size caps (unbuilt);
 - the `users` table and accounts. There's a single implicit owner today.
 - Respecting robots.txt and polite intervals (PLAN.md risk 3) is also unbuilt.
+
+## Automated issues
+
+Open issues labelled `Automated` are worked by a scheduled routine: every 6 hours, a fresh session, no owner in the loop. This section is the routine's contract; its prompt only points here. An interactive session working an `Automated` issue follows it too. Only the owner adds or removes the `Automated` label.
+
+### One run
+1. **Maintain before starting.** At most one open PR from an `automated/` branch may be in flight, not counting PRs labelled `needs-owner`. If one exists: merge `master` into it (a merge commit, never a rebase), fix red CI, answer every open review thread, then merge it if it qualifies (see "Merge or stop") and end the run without starting new work.
+2. **Answered questions.** For each `needs-owner` PR where the owner has replied after the routine's question, act on the answer, remove the label, and treat it as the PR in flight.
+3. **A red `master` comes first.** If CI on `master` went red after an automated merge, open and merge a revert of that merge before anything else.
+4. **Pick the next issue:** open, labelled `Automated`, with no open PR from any branch that references it, and no closed-unmerged PR from `automated/issue-<N>` (that means the owner rejected it). Order: #15, #28, #35, #25, #24, #32, #30, #29, #19, #47, #38, #39, #33, then any other `Automated` issue, lowest number first. #35 goes before the other Docker issues so CI builds the images before they change.
+5. **Research, then plan.** Read the issue and its comments, docs/PLAN.md, the sections of this file that cover the code involved, and that code and its tests. Write a plan before editing: files, rough size, approach, and what is out of scope.
+6. **Build it** on `automated/issue-<N>` from a fresh `origin/master`, validate, self-review, push, open the PR, then merge or stop.
+
+### Size and scope
+- Make the smallest change that meets the acceptance criteria. Touch only the files in the plan; an unplanned file needs a reason in the PR.
+- No drive-by refactors, renames, reformatting, dependency bumps, or fixes that belong to another issue.
+- Above about 300 changed lines of non-test, non-lockfile code, split the work into issue-sized steps or stop for the owner.
+
+Some issues are only partly automatable. Do this part and list the rest under "Out of scope":
+- **#32:** `dependabot.yml`, a CodeQL workflow, and `npm audit --omit=dev --audit-level=high` for `backend/` only; the frontend audit waits on #31. No repository settings.
+- **#29:** code and tests only. The hosting-specific `TRUST_PROXY` documentation waits on #23.
+- **#19:** backend only. Showing the message in the UI waits on #16.
+
+### Code
+- Match the surrounding style, naming and comment density, and the patterns this file describes: `ADDED_COLUMNS` for new columns, injected seams for tests, `getWatchOr404`, `sendScrapeError`, `escapeMarkup`.
+- No comments about the change or its history ("fixed for #15", "added by Claude"), no TODOs, no commented-out code, no leftover debug logging.
+- Every behaviour change gets a test, and no test touches the network.
+
+### Before pushing
+- In `backend/`: `npm ci` and `npm test`. If frontend files changed, at the root: `npm ci`, `npm run lint`, `npm run test:ci` and `CI=true npm run build`.
+- Run the `code-review` skill on the diff, fix what it finds, and re-check the size against the plan.
+
+### Merge or stop
+Squash-merge when CI is green on a branch up to date with `master`, the self-review is clean, and no review thread is open.
+
+Stop for the owner only when:
+- the issue, PLAN.md and this file leave a real trade-off open;
+- the fix needs money, an account, a secret or a repository setting;
+- the acceptance criteria can't be met as written;
+- the change is still over the size limit after splitting;
+- it changes the behaviour of `backend/ssrf.js`.
+
+To stop, label the PR `needs-owner` and post one comment that asks the question as options, recommendation first. Then the next issue can start.
+
+### PR description
+Fill in `.github/pull_request_template.md`. A reader who never opened the issue should understand what was wrong and what changed.
+
+### Run report
+A run that implements or merges a fix ends its session (not GitHub) with a report that teaches the owner:
+1. **What the issue meant:** the concept behind it and why it matters for this project.
+2. **How it was reasoned:** the options considered and why this one won.
+3. **How it's usually done:** common industry practice and tools for this kind of problem.
+4. **The edits, walked through:** each meaningful change, what it does and the idea behind it.
+5. **Takeaways:** two or three points worth remembering.
+
+It closes with the PR link and its state: merged, or `needs-owner` with the question. A run that only maintained a PR or found nothing to do ends with two or three lines.
 
 ## Commands
 
