@@ -93,13 +93,16 @@ CI (`.github/workflows/ci.yml`) runs both suites plus lint and a production fron
 
 Single fixed owner for now (no accounts yet; see `docs/PLAN.md` Phase 2). All endpoints are on the Express backend.
 
-- `POST /watches` — create a watch. Body: `{ url, frequency: 'daily'|'weekly', selector? }`
+- `POST /watches` — create a watch. Body: `{ url, frequency: 'daily'|'weekly', selector?, alertChannels? }`. `alertChannels` is any of `['email', 'rss']` and defaults to `['rss']`.
 - `GET /watches` — list all watches
 - `GET /watches/:id` — get one watch
-- `PATCH /watches/:id` — update status. Body: `{ status: 'active'|'paused'|'broken' }`
-- `DELETE /watches/:id` — delete a watch and its snapshots/changes
+- `PATCH /watches/:id` — update status and/or alert channels. Body: `{ status?: 'active'|'paused'|'broken', alertChannels?: [...] }`
+- `DELETE /watches/:id` — delete a watch and everything recorded for it
 - `GET /watches/:id/snapshots` — list stored snapshots (newest first)
-- `GET /watches/:id/changes` — list detected changes with their diff (newest first)
+- `GET /watches/:id/changes` — list detected changes with their diff and the user's `feedback` (newest first)
+- `PUT /watches/:id/changes/:changeId/feedback` — rate a change. Body: `{ vote: 'useful'|'noise' }`. Voting again replaces the vote.
+- `DELETE /watches/:id/changes/:changeId/feedback` — clear a change's rating
+- `GET /watches/:id/alerts` — list the watch's alerts and their delivery status (newest first)
 - `POST /watches/:id/check` — run the snapshot pipeline now: fetch the page, hash its content, store a new snapshot only if the hash changed, and diff it against the previous snapshot if one exists. Active watches are also checked automatically on their own cadence by the scheduler; this endpoint is for triggering a check out of band.
 
 The diff is a deterministic paragraph-level comparison (`backend/diff.js`) with noise filtering for timestamps, counters and copyright-year footers — no LLM is involved in detection.
@@ -111,6 +114,22 @@ Once the diff has proved a change, `backend/explainer.js` asks the LLM what kind
 The model is never asked to quote. It receives the changed paragraphs numbered, and replies with the numbers its summary rests on; the quoted text is resolved from the stored diff. A quote the model was not given therefore cannot be produced. A summary that asserts a figure absent from the diff is discarded, leaving the change recorded but unexplained.
 
 Cost is bounded by the diff running first: an unchanged page makes no model call at all. A diff larger than `EXPLAIN_MAX_PARAGRAPHS` is recorded as a `layout_change` without calling the model, since a redesign is not a change in terms. Set `EXPLAIN_ENABLED=false` to detect changes without explaining them, which also allows running without a `GROQ_API_KEY`.
+
+### Alerts and RSS feeds
+
+Each detected change raises one alert per channel the watch has switched on. A watch can use RSS, email, both or neither. If the same change repeats on the same watch within `ALERT_REPEAT_WINDOW_MS` (7 days), for example a page flipping between two versions, it is recorded as `suppressed` instead of alerting again.
+
+RSS feeds and evidence pages are off until `LINK_TOKEN` is set. Then:
+
+- `GET /feed.xml?token=<LINK_TOKEN>` — changes across every watched page
+- `GET /watches/:id/feed.xml?token=<LINK_TOKEN>` — changes on one page
+- `GET /evidence/changes/:changeId?token=<LINK_TOKEN>` — the evidence page every alert links to: the summary, the exact changed paragraphs, and the before and after versions with their screenshots, so you can check the claim yourself
+
+Paste a feed link into a feed reader. The token is the secret part of every link, so treat the links like a password. Set `PUBLIC_BASE_URL` to the address the backend is reached at, so links in feeds and emails point to the right place.
+
+**Email.** Email alerts go to `ALERT_EMAIL_TO` through any SMTP server, set with `SMTP_*` in `backend/.env`. Each email holds the summary, the changed text and the evidence link. It waits for the AI summary (at most 10 minutes) and is retried with growing gaps (1m, 4m, 16m…). After `EMAIL_MAX_ATTEMPTS` tries it is marked `failed`, and the reason is kept on the alert. Until email is configured, alerts wait as `pending` and record which setting is missing.
+
+To try it without signing up anywhere, set `EMAIL_TRANSPORT=ethereal`. Each email goes to a throwaway test inbox, and the server logs a link to view it. Those pages are public, so use a throwaway `LINK_TOKEN` while testing.
 
 ### Scheduler
 
@@ -134,7 +153,8 @@ Active watches are checked on their `frequency` (daily or weekly) by a scheduler
 - `RATE_LIMIT_WINDOW_MS` / `RATE_LIMIT_MAX`: General per-IP rate limit (default: 60 requests per 60s)
 - `SCRAPE_RATE_LIMIT_MAX`: Per-IP limit for `/scrape` per window (default: 10)
 - `MAX_CONCURRENT_SCRAPES`: Simultaneous browser scrapes before returning 503 (default: 3)
-- `SCREENSHOT_TTL_MS`: How long screenshots are kept before cleanup (default: 3600000)
+- `SCREENSHOT_TTL_MS`: How long transient scrape screenshots are kept before cleanup (default: 3600000). Screenshots that back a watch snapshot are kept as evidence for as long as the snapshot exists.
+- `EVIDENCE_DIR`: Where those evidence screenshots are stored (default: an `evidence` folder next to `DB_PATH`, so on the Docker volume)
 - `TRUST_PROXY`: Set (e.g. `1`) when running behind a reverse proxy so rate limits use the real client IP
 - `SCHEDULER_ENABLED`: Set to `false` to run the API without recurring checks (default: enabled)
 - `SCHEDULER_TICK_MS`: How often the scheduler asks the database what is due (default: 60000)
@@ -145,6 +165,14 @@ Active watches are checked on their `frequency` (daily or weekly) by a scheduler
 - `EXPLAIN_ENABLED`: Set to `false` to record changes without calling the LLM (default: enabled)
 - `EXPLAIN_MAX_PARAGRAPHS`: Diffs larger than this are recorded as a layout change without a model call (default: 40)
 - `EXPLAIN_MAX_CHARS`: Character budget for the explainer prompt (default: 8000)
+- `ALERT_REPEAT_WINDOW_MS`: A repeat of the same change on the same watch within this window is suppressed (default: 604800000, 7 days)
+- `LINK_TOKEN`: Secret required in RSS feed and evidence page links; both are off while it is empty
+- `PUBLIC_BASE_URL`: Address the backend is reached at, used to build links in feeds and emails (default: `http://localhost:<PORT>`)
+- `EMAIL_TRANSPORT`: `smtp` (default) or `ethereal` for a throwaway test inbox
+- `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS`: The SMTP server for email alerts (port defaults to 587; 465 uses TLS from the start)
+- `ALERT_EMAIL_FROM` / `ALERT_EMAIL_TO`: Sender, and the one address that receives every email alert
+- `EMAIL_TICK_MS`: How often waiting emails are sent (default: 30000)
+- `EMAIL_MAX_ATTEMPTS`: Tries before an email alert is marked `failed` (default: 5)
 
 See `backend/.env.example` for a ready-to-copy template.
 

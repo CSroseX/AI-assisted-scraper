@@ -38,7 +38,7 @@ Two services instead of four.
 | Hardened scraper (egress proxy, limits) | Keep. Core asset. |
 | Groq client | Keep. Used only to explain changes. |
 | React frontend | Keep. Rebuild screens around watches instead of chat sessions. |
-| SQLite (single file, migrations, Docker volume, backups) | ✅ **New.** Tables: `users`, `watches`, `snapshots`, `changes`, `alerts`, `feedback`. (`watches`, `snapshots`, `changes` exist; `users`, `alerts`, `feedback` and backups are not built yet.) |
+| SQLite (single file, migrations, Docker volume, backups) | ✅ **New.** Tables: `users`, `watches`, `snapshots`, `changes`, `alerts`, `feedback`. (`watches`, `snapshots`, `changes`, `alerts` and `feedback` exist; `users` and backups are not built yet.) |
 | Flask "RL" review service | ✅ **Remove.** The RL work is dropped (issue #6, closed as not planned). Thumbs up/down become plain stored `feedback` used to tune thresholds, not a learning system. |
 | ChromaDB version service | ✅ **Remove** as the version store; SQLite replaces it. Semantic search over history can be revisited later. |
 
@@ -58,7 +58,7 @@ Order reflects dependencies.
 3. ✅ **Diff engine (no LLM):** paragraph-level diff with noise filtering. (Not yet tuned against a corpus of 20-30 real ToS and pricing pages — only unit-tested on synthetic examples.)
 4. ✅ **Scheduler:** jittered runs that survive restarts, respect the scrape concurrency cap, back off on failures, and mark a watch "broken" after repeated failures. (Scheduling state is persisted in `watches.next_check_at`/`failure_count`, so a watch due during downtime runs on the first tick back.)
 5. ✅ **Explainer:** runs only when a real diff exists. Classifies each change (price, fees, cancellation, data use, cosmetic) and explains it with quoted text; output is validated against the diff. (The model is given numbered diff paragraphs and replies with indices, so a quote it did not receive cannot be expressed; a diff above `EXPLAIN_MAX_PARAGRAPHS` is labelled `layout_change` without calling the model. Prompt not yet tuned against a real corpus — see step 3.)
-6. **Alerts:** email and RSS **(open)**, with links to before/after and screenshots. Deduplicated.
+6. ✅ **Alerts:** email and RSS, with links to before/after and screenshots. Deduplicated. (Users pick email, RSS or both per watch. Each alert links to an evidence page with the changed text, both versions and their screenshots, which are now kept for as long as their snapshot exists. A change repeating within 7 days is suppressed. Email goes through any SMTP server, or a throwaway test inbox during development. Open: whether wording-only `cosmetic` changes should alert at all.)
 7. **UI:** watchlist, per-watch change timeline, diff viewer, and thumbs up/down on alerts stored as feedback. Clear messaging when a page cannot be read (login required, bot protection, heavy JavaScript).
 
 **Done when:**
@@ -94,5 +94,5 @@ Order reflects dependencies.
 ## 7. Open decisions
 
 1. **Scope cut:** confirm removal of the RL and Chroma services in favour of SQLite only (assumed in this plan).
-2. **Alert channel for the MVP:** email only, or email plus RSS (recommended: both, RSS is nearly free).
+2. ✅ **Alert channel for the MVP:** decided: both, chosen per watch.
 3. **Hosting target:** self-hosted on a small server with Docker Compose (assumed), or a hosted service for others. This decides how much weight Phase 2 carries.

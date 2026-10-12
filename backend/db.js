@@ -36,6 +36,34 @@ const MIGRATIONS = [
     created_at INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_changes_watch_id ON changes(watch_id, created_at);
+  `,
+  // One row per change per channel. The unique index is the hard dedup rule:
+  // the database itself refuses a second alert for the same change on the same
+  // channel, so a crash or retry can never queue it twice.
+  `
+  CREATE TABLE IF NOT EXISTS alerts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    watch_id INTEGER NOT NULL REFERENCES watches(id) ON DELETE CASCADE,
+    change_id INTEGER NOT NULL REFERENCES changes(id) ON DELETE CASCADE,
+    channel TEXT NOT NULL CHECK (channel IN ('email', 'rss')),
+    diff_hash TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'sent', 'failed', 'suppressed')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    sent_at INTEGER,
+    created_at INTEGER NOT NULL
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_change_channel ON alerts(change_id, channel);
+  CREATE INDEX IF NOT EXISTS idx_alerts_repeat ON alerts(watch_id, channel, diff_hash, created_at);
+  CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(status, created_at);
+
+  CREATE TABLE IF NOT EXISTS feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    change_id INTEGER NOT NULL UNIQUE REFERENCES changes(id) ON DELETE CASCADE,
+    vote TEXT NOT NULL CHECK (vote IN ('useful', 'noise')),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
   `
 ];
 
@@ -54,7 +82,13 @@ const ADDED_COLUMNS = [
   { table: 'changes', column: 'quotes_json', ddl: 'ALTER TABLE changes ADD COLUMN quotes_json TEXT' },
   { table: 'changes', column: 'explained_at', ddl: 'ALTER TABLE changes ADD COLUMN explained_at INTEGER' },
   { table: 'changes', column: 'explain_error', ddl: 'ALTER TABLE changes ADD COLUMN explain_error TEXT' },
-  { table: 'changes', column: 'diff_hash', ddl: 'ALTER TABLE changes ADD COLUMN diff_hash TEXT' }
+  { table: 'changes', column: 'diff_hash', ddl: 'ALTER TABLE changes ADD COLUMN diff_hash TEXT' },
+  // Per-watch alert channels. RSS is on by default: it needs no setup and sends
+  // nothing anywhere. Email is opt-in.
+  { table: 'watches', column: 'alert_rss', ddl: 'ALTER TABLE watches ADD COLUMN alert_rss INTEGER NOT NULL DEFAULT 1' },
+  { table: 'watches', column: 'alert_email', ddl: 'ALTER TABLE watches ADD COLUMN alert_email INTEGER NOT NULL DEFAULT 0' },
+  // When a failed email may be retried; NULL means as soon as it is due.
+  { table: 'alerts', column: 'next_attempt_at', ddl: 'ALTER TABLE alerts ADD COLUMN next_attempt_at INTEGER' }
 ];
 
 function applyAddedColumns(database) {

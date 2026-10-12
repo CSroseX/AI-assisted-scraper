@@ -9,9 +9,14 @@ const rateLimit = require('express-rate-limit');
 const { isPrivateIPv4, isPrivateIPv6 } = require('./ssrf');
 const { SCREENSHOT_DIR, validateScrapeUrl, captureSnapshot, scraperBusy, closeScraper } = require('./scraper');
 const { closeDb } = require('./db');
+const { sweepEvidence, adoptLegacyScreenshots } = require('./evidence');
 const { callGroq, withRetries, clampTextForModel } = require('./groq');
 const watchesRouter = require('./watches');
+const feedsRouter = require('./feeds');
+const evidencePageRouter = require('./evidencePage');
 const scheduler = require('./scheduler');
+const emailAlerts = require('./emailAlerts');
+const { checkEmailSetup } = require('./mailer');
 
 function parseAllowedOrigins(raw = '') {
   const parsed = String(raw)
@@ -62,7 +67,8 @@ app.use(apiLimiter);
 const SCREENSHOT_TTL_MS = Number(process.env.SCREENSHOT_TTL_MS || 60 * 60 * 1000);
 app.use('/screenshots', express.static(SCREENSHOT_DIR));
 
-// Screenshots are transient: delete anything older than the TTL.
+// Screenshots here are transient: delete anything older than the TTL. Those a
+// watch snapshot needs were already copied to evidence storage (evidence.js).
 function cleanupScreenshots(now = Date.now()) {
   let names;
   try {
@@ -341,6 +347,8 @@ app.post('/summarize', async (req, res) => {
 });
 
 app.use('/watches', watchesRouter);
+app.use(feedsRouter);
+app.use(evidencePageRouter);
 
 app.get('/scheduler/status', (_req, res) => {
   res.json(scheduler.status());
@@ -361,16 +369,33 @@ app.use((err, _req, res, _next) => {
 
 const PORT = Number(process.env.PORT || 5000);
 if (require.main === module) {
-  cleanupScreenshots();
-  setInterval(cleanupScreenshots, Math.max(60000, Math.floor(SCREENSHOT_TTL_MS / 4))).unref();
+  // Adopt before the first cleanup, which would delete the files being adopted.
+  adoptLegacyScreenshots(SCREENSHOT_DIR);
+  const cleanupFiles = () => {
+    cleanupScreenshots();
+    sweepEvidence();
+  };
+  cleanupFiles();
+  setInterval(cleanupFiles, Math.max(60000, Math.floor(SCREENSHOT_TTL_MS / 4))).unref();
   if (process.env.SCHEDULER_ENABLED !== 'false') {
     scheduler.start();
     console.log(`Scheduler started, ticking every ${scheduler.TICK_MS}ms`);
+  }
+  emailAlerts.start();
+  const email = checkEmailSetup();
+  console.log(email.ok
+    ? `Email alerts on (${email.mode})`
+    : `Email alerts not set up, missing: ${email.missing.join(', ')}. Email alerts will wait until they are set.`);
+  if (email.mode === 'ethereal') {
+    // Ethereal message pages are public, and every alert email carries an
+    // evidence link with LINK_TOKEN in it.
+    console.warn('Ethereal is a test inbox: anyone with a message link can read it, including the LINK_TOKEN in its links. Use a throwaway LINK_TOKEN while testing.');
   }
   app.listen(PORT, () => console.log(`Server is running on port ${PORT}`));
 
   const shutdown = async () => {
     scheduler.stop();
+    emailAlerts.stop();
     await closeScraper();
     closeDb();
     process.exit(0);

@@ -4,6 +4,8 @@ const { getDb } = require('./db');
 const scraper = require('./scraper');
 const { computeDiff, hashChanges } = require('./diff');
 const { explainChange } = require('./explainer');
+const { enabledChannels, parseChannels, queueAlerts, serializeAlert } = require('./alerts');
+const { preserveScreenshot, discardEvidence } = require('./evidence');
 
 const router = express.Router();
 
@@ -32,7 +34,8 @@ function serializeWatch(row) {
     nextCheckAt: row.next_check_at,
     lastCheckedAt: row.last_checked_at,
     failureCount: row.failure_count,
-    lastError: row.last_error
+    lastError: row.last_error,
+    alertChannels: enabledChannels(row)
   };
 }
 
@@ -52,7 +55,7 @@ function getWatchOr404(req, res) {
 
 // Create a watch.
 router.post('/', async (req, res) => {
-  const { url, selector = null, frequency } = req.body || {};
+  const { url, selector = null, frequency, alertChannels = ['rss'] } = req.body || {};
 
   if (!isNonEmptyString(url, MAX_URL_LENGTH)) {
     return res.status(400).json({ error: 'url is required' });
@@ -63,6 +66,10 @@ router.post('/', async (req, res) => {
   if (!FREQUENCIES.includes(frequency)) {
     return res.status(400).json({ error: `frequency must be one of: ${FREQUENCIES.join(', ')}` });
   }
+  const channels = parseChannels(alertChannels);
+  if (channels.error) {
+    return res.status(400).json({ error: channels.error });
+  }
 
   const urlCheck = await scraper.validateScrapeUrl(url);
   if (!urlCheck.ok) {
@@ -72,8 +79,11 @@ router.post('/', async (req, res) => {
   const now = Date.now();
   // Due immediately: the scheduler takes the baseline snapshot on its next tick.
   const result = getDb()
-    .prepare('INSERT INTO watches (url, selector, frequency, status, created_at, updated_at, next_check_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-    .run(urlCheck.parsedUrl, selector, frequency, 'active', now, now, now);
+    .prepare(
+      `INSERT INTO watches (url, selector, frequency, status, created_at, updated_at, next_check_at, alert_email, alert_rss)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(urlCheck.parsedUrl, selector, frequency, 'active', now, now, now, Number(channels.email), Number(channels.rss));
 
   const watch = getDb().prepare('SELECT * FROM watches WHERE id = ?').get(result.lastInsertRowid);
   res.status(201).json(serializeWatch(watch));
@@ -92,26 +102,39 @@ router.get('/:id', (req, res) => {
   res.json(serializeWatch(watch));
 });
 
-// Pause or resume a watch.
+// Pause or resume a watch, and/or change its alert channels.
 router.patch('/:id', (req, res) => {
   const watch = getWatchOr404(req, res);
   if (!watch) return;
 
-  const { status } = req.body || {};
-  if (!STATUSES.includes(status)) {
+  const { status, alertChannels } = req.body || {};
+  if (status === undefined && alertChannels === undefined) {
+    return res.status(400).json({ error: 'Provide status and/or alertChannels' });
+  }
+  if (status !== undefined && !STATUSES.includes(status)) {
     return res.status(400).json({ error: `status must be one of: ${STATUSES.join(', ')}` });
   }
-
-  const now = Date.now();
-  if (status === 'active') {
-    // Resuming a paused or broken watch clears its backoff so it runs again
-    // promptly rather than staying parked at a far-future due time.
-    getDb()
-      .prepare('UPDATE watches SET status = ?, failure_count = 0, last_error = NULL, next_check_at = ?, updated_at = ? WHERE id = ?')
-      .run(status, now, now, watch.id);
-  } else {
-    getDb().prepare('UPDATE watches SET status = ?, updated_at = ? WHERE id = ?').run(status, now, watch.id);
+  const channels = alertChannels === undefined ? null : parseChannels(alertChannels);
+  if (channels && channels.error) {
+    return res.status(400).json({ error: channels.error });
   }
+
+  const db = getDb();
+  const now = Date.now();
+  db.transaction(() => {
+    if (status === 'active') {
+      // Resuming a paused or broken watch clears its backoff so it runs again
+      // promptly rather than staying parked at a far-future due time.
+      db.prepare('UPDATE watches SET status = ?, failure_count = 0, last_error = NULL, next_check_at = ?, updated_at = ? WHERE id = ?')
+        .run(status, now, now, watch.id);
+    } else if (status !== undefined) {
+      db.prepare('UPDATE watches SET status = ?, updated_at = ? WHERE id = ?').run(status, now, watch.id);
+    }
+    if (channels) {
+      db.prepare('UPDATE watches SET alert_email = ?, alert_rss = ?, updated_at = ? WHERE id = ?')
+        .run(Number(channels.email), Number(channels.rss), now, watch.id);
+    }
+  })();
   const updated = getDb().prepare('SELECT * FROM watches WHERE id = ?').get(watch.id);
   res.json(serializeWatch(updated));
 });
@@ -145,9 +168,11 @@ router.get('/:id/changes', (req, res) => {
   if (!watch) return;
   const rows = getDb()
     .prepare(
-      `SELECT id, from_snapshot_id, to_snapshot_id, diff_json, created_at,
-              category, summary, quotes_json, explained_at, explain_error
-       FROM changes WHERE watch_id = ? ORDER BY created_at DESC`
+      `SELECT c.id, c.from_snapshot_id, c.to_snapshot_id, c.diff_json, c.created_at,
+              c.category, c.summary, c.quotes_json, c.explained_at, c.explain_error,
+              f.vote AS feedback
+       FROM changes c LEFT JOIN feedback f ON f.change_id = c.id
+       WHERE c.watch_id = ? ORDER BY c.created_at DESC, c.id DESC`
     )
     .all(watch.id);
   res.json(rows.map((r) => ({
@@ -162,8 +187,69 @@ router.get('/:id/changes', (req, res) => {
     summary: r.summary,
     quotes: r.quotes_json ? JSON.parse(r.quotes_json) : [],
     explainedAt: r.explained_at,
-    explainError: r.explain_error
+    explainError: r.explain_error,
+    // The user's verdict: 'useful', 'noise', or null when not rated.
+    feedback: r.feedback
   })));
+});
+
+const VOTES = ['useful', 'noise'];
+
+function getChangeOr404(req, res, watch) {
+  const id = Number.parseInt(req.params.changeId, 10);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: 'Invalid change id' });
+    return null;
+  }
+  const change = getDb().prepare('SELECT id FROM changes WHERE id = ? AND watch_id = ?').get(id, watch.id);
+  if (!change) {
+    res.status(404).json({ error: 'Change not found' });
+    return null;
+  }
+  return change;
+}
+
+// Rate a change as useful or noise. One verdict per change; voting again
+// replaces it.
+router.put('/:id/changes/:changeId/feedback', (req, res) => {
+  const watch = getWatchOr404(req, res);
+  if (!watch) return;
+  const change = getChangeOr404(req, res, watch);
+  if (!change) return;
+
+  const { vote } = req.body || {};
+  if (!VOTES.includes(vote)) {
+    return res.status(400).json({ error: `vote must be one of: ${VOTES.join(', ')}` });
+  }
+
+  const now = Date.now();
+  getDb()
+    .prepare(
+      `INSERT INTO feedback (change_id, vote, created_at, updated_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(change_id) DO UPDATE SET vote = excluded.vote, updated_at = excluded.updated_at`
+    )
+    .run(change.id, vote, now, now);
+  res.json({ changeId: change.id, vote });
+});
+
+// Clear a change's rating.
+router.delete('/:id/changes/:changeId/feedback', (req, res) => {
+  const watch = getWatchOr404(req, res);
+  if (!watch) return;
+  const change = getChangeOr404(req, res, watch);
+  if (!change) return;
+  getDb().prepare('DELETE FROM feedback WHERE change_id = ?').run(change.id);
+  res.status(204).end();
+});
+
+// List a watch's alerts (newest first), including suppressed repeats.
+router.get('/:id/alerts', (req, res) => {
+  const watch = getWatchOr404(req, res);
+  if (!watch) return;
+  const rows = getDb()
+    .prepare('SELECT * FROM alerts WHERE watch_id = ? ORDER BY created_at DESC, id DESC')
+    .all(watch.id);
+  res.json(rows.map(serializeAlert));
 });
 
 // Asks the LLM to describe a change that is already stored, and records the
@@ -241,23 +327,48 @@ async function checkWatchNow(watchId) {
   }
 
   const now = Date.now();
-  const insertResult = db
-    .prepare('INSERT INTO snapshots (watch_id, content, content_hash, screenshot_path, created_at) VALUES (?, ?, ?, ?, ?)')
-    .run(watchId, captured.content, contentHash, captured.screenshotPath, now);
-  const snapshotId = insertResult.lastInsertRowid;
+  const diffResult = latest ? computeDiff(latest.content, captured.content) : null;
 
-  let change = null;
-  if (latest) {
-    const diffResult = computeDiff(latest.content, captured.content);
-    if (diffResult.hasMeaningfulChange) {
-      const changeResult = db
-        .prepare('INSERT INTO changes (watch_id, from_snapshot_id, to_snapshot_id, diff_json, diff_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-        .run(watchId, latest.id, snapshotId, JSON.stringify(diffResult.changes), hashChanges(diffResult.changes), now);
-      change = { id: changeResult.lastInsertRowid, changes: diffResult.changes };
+  // Kept before the snapshot row that refers to it is written, and discarded
+  // again if that write fails.
+  const screenshotPath = preserveScreenshot(captured.screenshotPath, scraper.SCREENSHOT_DIR);
 
-      const explanation = await explainStoredChange(change.id, diffResult.changes);
-      if (explanation) change.explanation = explanation;
-    }
+  // Snapshot, change and alerts are written together or not at all. If only
+  // the snapshot landed, the next check would see identical content and stop
+  // early, so the change and its alerts would be lost for good.
+  const writeAll = db.transaction(() => {
+    const snapshotId = db
+      .prepare('INSERT INTO snapshots (watch_id, content, content_hash, screenshot_path, created_at) VALUES (?, ?, ?, ?, ?)')
+      .run(watchId, captured.content, contentHash, screenshotPath, now)
+      .lastInsertRowid;
+
+    if (!diffResult || !diffResult.hasMeaningfulChange) return { snapshotId, change: null };
+
+    const diffHash = hashChanges(diffResult.changes);
+    const changeId = db
+      .prepare('INSERT INTO changes (watch_id, from_snapshot_id, to_snapshot_id, diff_json, diff_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(watchId, latest.id, snapshotId, JSON.stringify(diffResult.changes), diffHash, now)
+      .lastInsertRowid;
+
+    // Re-read so a channel toggled during the scrape is respected.
+    const current = db.prepare('SELECT * FROM watches WHERE id = ?').get(watchId);
+    queueAlerts(db, { watch: current, changeId, diffHash, now });
+
+    return { snapshotId, change: { id: changeId, changes: diffResult.changes } };
+  });
+
+  let written;
+  try {
+    written = writeAll();
+  } catch (err) {
+    discardEvidence(screenshotPath);
+    throw err;
+  }
+  const { snapshotId, change } = written;
+
+  if (change) {
+    const explanation = await explainStoredChange(change.id, change.changes);
+    if (explanation) change.explanation = explanation;
   }
 
   return { changed: true, snapshot: { id: snapshotId, contentHash }, change };

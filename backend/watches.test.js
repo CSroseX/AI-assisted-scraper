@@ -8,6 +8,9 @@ const path = require('path');
 const dbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'watchdog-test-'));
 process.env.DB_PATH = path.join(dbDir, 'test.db');
 process.env.GROQ_API_KEY = 'test-key';
+// This file sends well over the default 60 requests a minute; rate limiting is
+// not what it tests.
+process.env.RATE_LIMIT_MAX = '10000';
 
 const axios = require('axios');
 const scraper = require('./scraper');
@@ -351,4 +354,214 @@ test('POST /watches/:id/check is 503 when the scraper is at capacity', async (t)
   t.mock.method(scraper, 'scraperBusy', () => true);
   const res = await post(`/watches/${created.id}/check`);
   assert.equal(res.status, 503);
+});
+
+// --- alert channels, alerts and feedback --------------------------------------
+
+function explainerOff(t) {
+  process.env.EXPLAIN_ENABLED = 'false';
+  t.after(() => { delete process.env.EXPLAIN_ENABLED; });
+}
+
+// Creates a watch, takes its baseline, then changes the page once.
+async function watchWithOneChange(t, url, body = {}) {
+  explainerOff(t);
+  t.mock.method(scraper, 'validateScrapeUrl', async (u) => ({ ok: true, parsedUrl: u }));
+  const created = await (await post('/watches', { url, frequency: 'daily', ...body })).json();
+  t.mock.method(scraper, 'captureSnapshot', async () => ({ content: 'Price: $10/month.', screenshotPath: null }));
+  await post(`/watches/${created.id}/check`);
+  t.mock.method(scraper, 'captureSnapshot', async () => ({ content: 'Price: $12/month.', screenshotPath: null }));
+  await post(`/watches/${created.id}/check`);
+  const [change] = await (await get(`/watches/${created.id}/changes`)).json();
+  return { watch: created, change };
+}
+
+test('a new watch alerts by RSS unless told otherwise', async (t) => {
+  t.mock.method(scraper, 'validateScrapeUrl', async (url) => ({ ok: true, parsedUrl: url }));
+  const plain = await (await post('/watches', { url: 'https://default-ch.test', frequency: 'daily' })).json();
+  assert.deepEqual(plain.alertChannels, ['rss']);
+
+  const both = await (await post('/watches', { url: 'https://both-ch.test', frequency: 'daily', alertChannels: ['rss', 'email'] })).json();
+  assert.deepEqual(both.alertChannels, ['email', 'rss']);
+
+  const none = await (await post('/watches', { url: 'https://no-ch.test', frequency: 'daily', alertChannels: [] })).json();
+  assert.deepEqual(none.alertChannels, []);
+});
+
+test('POST /watches rejects bad alert channels', async (t) => {
+  t.mock.method(scraper, 'validateScrapeUrl', async (url) => ({ ok: true, parsedUrl: url }));
+  const bad = (alertChannels) => post('/watches', { url: 'https://bad-ch.test', frequency: 'daily', alertChannels });
+  assert.equal((await bad(['sms'])).status, 400);
+  assert.equal((await bad(['rss', 'rss'])).status, 400);
+  assert.equal((await bad('rss')).status, 400);
+});
+
+test('PATCH /watches/:id changes alert channels without touching status', async (t) => {
+  t.mock.method(scraper, 'validateScrapeUrl', async (url) => ({ ok: true, parsedUrl: url }));
+  const created = await (await post('/watches', { url: 'https://patch-ch.test', frequency: 'daily' })).json();
+  await patch(`/watches/${created.id}`, { status: 'paused' });
+
+  const updated = await (await patch(`/watches/${created.id}`, { alertChannels: ['email'] })).json();
+  assert.deepEqual(updated.alertChannels, ['email']);
+  assert.equal(updated.status, 'paused');
+
+  // Both at once.
+  const both = await (await patch(`/watches/${created.id}`, { status: 'active', alertChannels: [] })).json();
+  assert.equal(both.status, 'active');
+  assert.deepEqual(both.alertChannels, []);
+
+  assert.equal((await patch(`/watches/${created.id}`, {})).status, 400);
+  assert.equal((await patch(`/watches/${created.id}`, { alertChannels: ['fax'] })).status, 400);
+  // A bad field rejects the whole request: the valid half is not applied.
+  assert.equal((await patch(`/watches/${created.id}`, { status: 'paused', alertChannels: ['fax'] })).status, 400);
+  assert.equal((await (await get(`/watches/${created.id}`)).json()).status, 'active');
+});
+
+test('a detected change queues an alert on each enabled channel', async (t) => {
+  const { watch, change } = await watchWithOneChange(t, 'https://alerts.test', { alertChannels: ['email', 'rss'] });
+  const alerts = await (await get(`/watches/${watch.id}/alerts`)).json();
+  const byChannel = Object.fromEntries(alerts.map((a) => [a.channel, a]));
+  assert.deepEqual(Object.keys(byChannel).sort(), ['email', 'rss']);
+  assert.equal(byChannel.email.status, 'pending');
+  assert.equal(byChannel.rss.status, 'sent');
+  for (const alert of alerts) assert.equal(alert.changeId, change.id);
+});
+
+test('end to end: a page change detected by a check is emailed once', async (t) => {
+  const { deliverPendingEmails } = require('./emailAlerts');
+  const { watch, change } = await watchWithOneChange(t, 'https://e2e-mail.test/pricing', { alertChannels: ['email'] });
+
+  const sent = [];
+  const send = async (message) => { sent.push(message); return { messageId: '<e2e@test>' }; };
+  const ready = { ok: true, mode: 'smtp', missing: [] };
+  await deliverPendingEmails({ send, setup: ready });
+  await deliverPendingEmails({ send, setup: ready });
+
+  // Earlier tests in this file queue email alerts too; look only at ours.
+  const ours = sent.filter((m) => m.subject.endsWith('e2e-mail.test'));
+  assert.equal(ours.length, 1, 'sent exactly once across two passes');
+  assert.equal(ours[0].subject, 'Change detected on e2e-mail.test');
+  assert.match(ours[0].text, /Removed: Price: \$10\/month\./);
+  assert.match(ours[0].text, new RegExp(`/evidence/changes/${change.id}\\?token=`));
+  const [emailAlert] = await (await get(`/watches/${watch.id}/alerts`)).json();
+  assert.equal(emailAlert.status, 'sent');
+});
+
+test('a baseline or an unchanged page queues no alerts', async (t) => {
+  t.mock.method(scraper, 'validateScrapeUrl', async (url) => ({ ok: true, parsedUrl: url }));
+  const created = await (await post('/watches', { url: 'https://quiet.test', frequency: 'daily' })).json();
+  t.mock.method(scraper, 'captureSnapshot', async () => ({ content: 'Same.', screenshotPath: null }));
+  await post(`/watches/${created.id}/check`);
+  await post(`/watches/${created.id}/check`);
+  assert.deepEqual(await (await get(`/watches/${created.id}/alerts`)).json(), []);
+});
+
+test('if alerts cannot be queued, the snapshot and change roll back and the next check retries', async (t) => {
+  t.mock.method(scraper, 'validateScrapeUrl', async (url) => ({ ok: true, parsedUrl: url }));
+  const created = await (await post('/watches', { url: 'https://atomic.test', frequency: 'daily' })).json();
+  t.mock.method(scraper, 'captureSnapshot', async () => ({ content: 'Fee: $1.', screenshotPath: null }));
+  await post(`/watches/${created.id}/check`);
+
+  // Make every alert insert fail, as a disk or constraint error would.
+  getDb().exec("CREATE TRIGGER fail_alerts BEFORE INSERT ON alerts BEGIN SELECT RAISE(ABORT, 'disk full'); END;");
+  t.after(() => getDb().exec('DROP TRIGGER IF EXISTS fail_alerts'));
+
+  explainerOff(t);
+  t.mock.method(scraper, 'captureSnapshot', async () => ({ content: 'Fee: $2.', screenshotPath: null }));
+  assert.equal((await post(`/watches/${created.id}/check`)).status, 502);
+  assert.equal((await (await get(`/watches/${created.id}/snapshots`)).json()).length, 1, 'no half-written snapshot');
+  assert.equal((await (await get(`/watches/${created.id}/changes`)).json()).length, 0);
+
+  // Once the fault clears, the same content is still seen as new and recorded fully.
+  getDb().exec('DROP TRIGGER fail_alerts');
+  assert.equal((await post(`/watches/${created.id}/check`)).status, 200);
+  assert.equal((await (await get(`/watches/${created.id}/changes`)).json()).length, 1);
+  assert.equal((await (await get(`/watches/${created.id}/alerts`)).json()).length, 1);
+});
+
+// A screenshot file as the real scraper would leave it.
+function transientScreenshot(t) {
+  const name = `${require('crypto').randomUUID()}.png`;
+  fs.mkdirSync(scraper.SCREENSHOT_DIR, { recursive: true });
+  fs.writeFileSync(path.join(scraper.SCREENSHOT_DIR, name), 'png-bytes');
+  t.after(() => fs.rmSync(path.join(scraper.SCREENSHOT_DIR, name), { force: true }));
+  return `screenshots/${name}`;
+}
+
+test('a stored snapshot keeps its screenshot as evidence, beyond the transient cleanup', async (t) => {
+  const { evidenceFile } = require('./evidence');
+  explainerOff(t);
+  t.mock.method(scraper, 'validateScrapeUrl', async (url) => ({ ok: true, parsedUrl: url }));
+  const created = await (await post('/watches', { url: 'https://evidence.test', frequency: 'daily' })).json();
+
+  const shot = transientScreenshot(t);
+  t.mock.method(scraper, 'captureSnapshot', async () => ({ content: 'Price: $10/month.', screenshotPath: shot }));
+  await post(`/watches/${created.id}/check`);
+
+  const [snapshot] = await (await get(`/watches/${created.id}/snapshots`)).json();
+  assert.match(snapshot.screenshotPath, /^evidence\/[0-9a-f-]+\.png$/);
+  // The transient copy expiring must not take the evidence with it.
+  fs.rmSync(path.join(scraper.SCREENSHOT_DIR, path.basename(shot)));
+  assert.equal(fs.readFileSync(evidenceFile(snapshot.screenshotPath), 'utf8'), 'png-bytes');
+
+  // A repeat check of unchanged content stores nothing, so keeps nothing.
+  const repeatShot = transientScreenshot(t);
+  t.mock.method(scraper, 'captureSnapshot', async () => ({ content: 'Price: $10/month.', screenshotPath: repeatShot }));
+  await post(`/watches/${created.id}/check`);
+  assert.equal(fs.existsSync(evidenceFile(`evidence/${path.basename(repeatShot)}`)), false);
+});
+
+test('when the snapshot write fails, its kept screenshot is discarded too', async (t) => {
+  const { evidenceFile } = require('./evidence');
+  explainerOff(t);
+  t.mock.method(scraper, 'validateScrapeUrl', async (url) => ({ ok: true, parsedUrl: url }));
+  const created = await (await post('/watches', { url: 'https://evidence-rollback.test', frequency: 'daily' })).json();
+  t.mock.method(scraper, 'captureSnapshot', async () => ({ content: 'Fee: $1.', screenshotPath: null }));
+  await post(`/watches/${created.id}/check`);
+
+  getDb().exec("CREATE TRIGGER fail_alerts_ev BEFORE INSERT ON alerts BEGIN SELECT RAISE(ABORT, 'disk full'); END;");
+  t.after(() => getDb().exec('DROP TRIGGER IF EXISTS fail_alerts_ev'));
+
+  const shot = transientScreenshot(t);
+  t.mock.method(scraper, 'captureSnapshot', async () => ({ content: 'Fee: $2.', screenshotPath: shot }));
+  assert.equal((await post(`/watches/${created.id}/check`)).status, 502);
+  assert.equal(fs.existsSync(evidenceFile(`evidence/${path.basename(shot)}`)), false, 'no orphaned evidence');
+});
+
+test('feedback: rate a change, change your mind, then clear it', async (t) => {
+  const { watch, change } = await watchWithOneChange(t, 'https://feedback.test');
+  const route = `/watches/${watch.id}/changes/${change.id}/feedback`;
+  const put = (body) => fetch(base + route, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+
+  assert.equal(change.feedback, null);
+
+  assert.deepEqual(await (await put({ vote: 'noise' })).json(), { changeId: change.id, vote: 'noise' });
+  await put({ vote: 'useful' });
+  const [rated] = await (await get(`/watches/${watch.id}/changes`)).json();
+  assert.equal(rated.feedback, 'useful', 'voting again replaces the earlier vote');
+  assert.equal(getDb().prepare('SELECT COUNT(*) AS n FROM feedback WHERE change_id = ?').get(change.id).n, 1);
+
+  assert.equal((await del(route)).status, 204);
+  const [cleared] = await (await get(`/watches/${watch.id}/changes`)).json();
+  assert.equal(cleared.feedback, null);
+
+  assert.equal((await put({ vote: 'meh' })).status, 400);
+});
+
+test('feedback is refused for a change that belongs to another watch', async (t) => {
+  const { change } = await watchWithOneChange(t, 'https://owner.test');
+  t.mock.method(scraper, 'validateScrapeUrl', async (url) => ({ ok: true, parsedUrl: url }));
+  const other = await (await post('/watches', { url: 'https://other.test', frequency: 'daily' })).json();
+
+  const res = await fetch(`${base}/watches/${other.id}/changes/${change.id}/feedback`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ vote: 'useful' })
+  });
+  assert.equal(res.status, 404);
+  assert.equal((await fetch(`${base}/watches/${other.id}/changes/abc/feedback`, { method: 'DELETE' })).status, 400);
 });

@@ -12,11 +12,18 @@ Its governing principle for new work: **detect deterministically, explain with t
 
 ### What's built vs. what's left
 
-Built: RL/Chroma cleanup, SQLite storage + watches API, snapshot pipeline, diff engine with noise filtering, persistent scheduler, LLM explainer.
+Built: RL/Chroma cleanup, SQLite storage + watches API, snapshot pipeline, diff engine with noise filtering, persistent scheduler, LLM explainer, and **alerts (step 6)**: per-watch email/RSS channels, dedup, RSS feeds, email, durable screenshots, and an evidence page per change.
+
+Step 6 decisions, for context:
+- Users choose email, RSS or both per watch.
+- Email goes through nodemailer, configured by env vars: Ethereal during development, then a free-tier SMTP provider.
+- Email goes to one app-wide address until accounts exist.
+- RSS is served per watch and as one global feed.
+- Open question: whether `cosmetic` changes should alert at all. They do today; skipping them would cut noise but trusts the LLM's label.
 
 Remaining in Phase 1 — **this is where new work goes**:
 
-- **Step 6, Alerts.** Decided: users choose email, RSS or both per watch. Email goes through nodemailer, configured by env vars, with a test inbox (Ethereal/Mailtrap) during development and a free-tier delivery service later. Email goes to one app-wide address held in settings until accounts exist. RSS is served both per watch and as one global feed. Needs the `alerts` and `feedback` tables, which **do not exist yet** (see `MIGRATIONS` in `backend/db.js` — only `watches`, `snapshots`, `changes`). Must link back to before/after snapshots and screenshots so a user can verify the claim. Deduplicate with a database uniqueness rule, not a check-then-insert in code. The rule must include `watch_id` as well as the channel, because `changes.diff_hash` is content-only and two pages with the same edit share a hash. Every change has a `diff_hash`: it is set at insert, and older rows are backfilled on DB open.
+- **CORS only allows `GET`/`POST`/`OPTIONS`** (`corsOptions.methods` in `index.js`). A browser on another origin cannot call `PATCH`/`DELETE /watches/:id` or `PUT`/`DELETE` feedback. The current chat UI never does, but step 7's UI will.
 - **Step 7, UI.** The frontend is **still the original chat demo** and has had no watchdog work at all — no watch list, no change timeline, no diff viewer, no feedback thumbs. Also needs honest failure messaging: many ToS pages sit behind logins or bot protection, and the system should say *why* a page can't be read rather than failing quietly.
 
 The `users` table and snapshot retention/size caps are also unbuilt. Accounts are Phase 2 — there is a single implicit owner for now, and no `users` table.
@@ -37,9 +44,9 @@ npm test -- --watchAll=false -t "renders app title"   # single test by name
 ```bash
 cd backend
 npm install
-npm start                                  # :5000, starts the scheduler too
+npm start                                  # :5000, starts the scheduler and the email sender too
 npm run dev                                # nodemon
-npm test                                   # node:test runner (no jest/mocha); 111 tests
+npm test                                   # node:test runner (no jest/mocha); 179 tests
 node --test ssrf.test.js                   # single file
 node --test --test-name-pattern "isPrivateIPv4" ssrf.test.js   # single test
 npm exec playwright install chromium       # required once before scraping works
@@ -120,9 +127,9 @@ The LLM half of the principle. Runs only on a diff the engine already proved, an
 - `GET /scheduler/status` reports per-status counts, due-now count and the next 10 upcoming checks.
 
 ### Storage (`backend/db.js`)
-Single better-sqlite3 file at `DB_PATH` (`/data/watchdog.db` under Compose, volume `watchdog_data`). WAL mode, `foreign_keys = ON`, so deleting a watch cascades its snapshots and changes.
+Single better-sqlite3 file at `DB_PATH` (`/data/watchdog.db` under Compose, volume `watchdog_data`). WAL mode, `foreign_keys = ON`, so deleting a watch cascades its snapshots, changes, alerts and feedback.
 
-Migrations are two mechanisms: the `MIGRATIONS` array of idempotent `CREATE TABLE IF NOT EXISTS`, plus `ADDED_COLUMNS`, which exists because SQLite has no `ADD COLUMN IF NOT EXISTS` — each entry checks `PRAGMA table_info` before altering. **Add a new column there, not to the `CREATE TABLE` body**, or existing databases won't get it. New tables (`alerts`, `feedback`, `users`) go in `MIGRATIONS`.
+Migrations are two mechanisms: the `MIGRATIONS` array of idempotent `CREATE TABLE IF NOT EXISTS`, plus `ADDED_COLUMNS`, which exists because SQLite has no `ADD COLUMN IF NOT EXISTS` — each entry checks `PRAGMA table_info` before altering. **Add a new column there, not to the `CREATE TABLE` body**, or existing databases won't get it. New tables (e.g. `users`) go in `MIGRATIONS` as a new array entry.
 
 ### SSRF defense (`backend/ssrf.js`) — the security boundary
 The most carefully built part of the codebase, and the plan calls the hardened scraper the project's core asset. Do not weaken it:
@@ -143,8 +150,64 @@ Watch creation runs `validateScrapeUrl` up front and stores the normalized URL, 
 - `app` is exported and `listen` is guarded by `require.main === module` so tests import without binding a port. The `module.exports` block also re-exports internals purely for unit tests, including `callGroq`, `routeToHandler` and every handler.
 - A graceful `SIGINT`/`SIGTERM` shutdown stops the scheduler, closes the browser and guard proxy, then closes the DB.
 
+### Alerts and feedback (`backend/alerts.js`)
+Each watch has two on/off flags, `alert_rss` (default on: it needs no setup and sends nothing) and `alert_email` (default off). The API exposes them as `alertChannels: ['email', 'rss']`.
+
+When `runCheck` records a change, `queueAlerts` writes one `alerts` row per enabled channel. **This happens in the same transaction as the snapshot and change inserts.** Writing only the snapshot would make the next check see identical content and stop early, losing the change and its alerts for good. The LLM explanation runs *after* the transaction, so the model stays out of it.
+
+Dedup has two layers:
+- **Hard:** a unique index on `(change_id, channel)`. A retry can never queue the same change twice on one channel.
+- **Soft:** a repeat of the same `diff_hash` on the same watch and channel within `ALERT_REPEAT_WINDOW_MS` (default 7 days) is stored as `suppressed` instead of `pending`. This stops a page that flips between two versions from alerting every check. Only non-suppressed rows open a window, so a flapping page re-alerts once per window, and a change that genuinely recurs later isn't lost. The check-then-insert is race-free because it runs inside the transaction and under `runCheck`'s per-watch lock.
+
+Alert statuses are `pending | sent | failed | suppressed`, and there are `attempts`/`last_error`/`sent_at` columns ready for email delivery. **An RSS alert is stored as `sent` immediately**, because RSS has no delivery step: being in the feed is being delivered. Email alerts start as `pending`. `feedback` holds one `useful | noise` vote per change (`change_id` UNIQUE, upserted), and it rates the *change*, not the alert. The "fewer than 1 in 3 alerts marked noise" goal in PLAN.md is measured from it.
+
+### Evidence storage (`backend/evidence.js`)
+The scraper writes every screenshot to `SCREENSHOT_DIR` (`backend/screenshots`). That folder is **transient**: `cleanupScreenshots` deletes files past `SCREENSHOT_TTL_MS`, and it sits outside the Docker volume. When `runCheck` stores a snapshot, `preserveScreenshot` **copies** its screenshot to `EVIDENCE_DIR`, which defaults to `evidence/` next to `DB_PATH`, so `/data/evidence` on the volume under Compose. It copies rather than renames because the two folders can be on different filesystems. `snapshots.screenshot_path` then holds `evidence/<uuid>.png`.
+
+- The copy happens just before the write transaction. If the transaction fails, `discardEvidence` removes the copy.
+- A missing screenshot never fails a check; the snapshot is stored without one.
+- Paths are matched against strict `screenshots/<uuid>.png` / `evidence/<uuid>.png` patterns, which rules out path traversal. Use `evidenceFile()` to resolve a stored path; never join one yourself.
+- `sweepEvidence` runs with the transient cleanup and deletes evidence no snapshot references, such as a deleted watch's screenshots, once it's older than an hour. The grace period protects a copy whose snapshot is about to be committed.
+- At startup, `adoptLegacyScreenshots` moves screenshots of older snapshots out of the transient folder if they still exist, and clears the path if they don't. It runs before the first cleanup, which would otherwise delete them.
+
+### Public links (`backend/publicLinks.js`, `backend/alertContent.js`)
+Feeds and evidence pages are opened by feed readers and email clients, not by our frontend, so in deployment they are the only URLs that must be public. They share one secret:
+
+- `requireLinkToken` needs `?token=` to match `LINK_TOKEN` (compared via SHA-256 and `timingSafeEqual`), and returns 503 until `LINK_TOKEN` is set.
+- `publicUrl(path)` builds an absolute link from `PUBLIC_BASE_URL` (default `http://localhost:<PORT>`) with the token attached. Emails have no request to take a host from, so links never use `req.host`.
+- `escapeMarkup` escapes for both HTML and XML, and drops characters XML 1.0 forbids, since one would break a whole feed. **Every page-derived string goes through it**, because scraped text is untrusted.
+- `alertContent.js` holds the wording every channel shares: `alertTitle` ("Price change on host"), `NO_SUMMARY` and `evidenceUrl(changeId)`. Email must use it too, so a change reads the same everywhere.
+
+### Evidence page (`backend/evidencePage.js`)
+`GET /evidence/changes/:changeId` is the page every alert links to. It's server-rendered, because alerts needed a working link before the step 7 UI. It shows the summary (or the honest fallback), every changed paragraph, and the before and after versions, each with its capture time, screenshot and full text in a `<details>`. Each screenshot sits in a scroll frame, because full-page captures of long terms pages run to thousands of pixels. `GET /evidence/files/:name` serves the screenshots, resolving names only through `evidenceFile()`.
+
+The page shows scraped content, so it sends a CSP with `default-src 'none'` and **no script source at all**, plus `Referrer-Policy: no-referrer`; otherwise following a link would leak the token. External links also carry `rel="noreferrer"`. Screenshot `src`s are relative (`../files/...`), so the page still works behind a path prefix.
+
+### Email (`backend/mailer.js`, `backend/emailAlerts.js`)
+`mailer.js` owns the transport, and everything is set by env vars, so switching providers is a settings change:
+- `EMAIL_TRANSPORT=smtp` (default) uses `SMTP_HOST`/`PORT`/`USER`/`PASS`.
+- `EMAIL_TRANSPORT=ethereal` creates a throwaway test inbox and logs a public view link per message.
+- `checkEmailSetup()` returns exactly which settings are missing.
+- `createSender({ transport })` takes an injected transport, so **tests never touch the network**. The real transport is created on first send, and a failed creation is retried rather than cached.
+- Messages set `disableFileAccess`/`disableUrlAccess`.
+- nodemailer is pinned to `^10.0.11`. Everything up to 10.0.5 has 15 advisories, including recipient-domain bypasses and SMTP injection.
+
+`emailAlerts.js` is the sender, built like the scheduler: all state is in `alerts` (`status`, `attempts`, `next_attempt_at`, `last_error`), and `setInterval` (`EMAIL_TICK_MS`) is only a heartbeat. `deliverPendingEmails({ now, send, setup })` is the injectable seam.
+- It sends `pending` email alerts whose watch still has `alert_email = 1`, once the change has **settled**: explained, failed to explain, `EXPLAIN_ENABLED=false`, or `SETTLE_MS` (10 min) has passed. This way an email carries the summary when there is one, but never waits forever.
+- On failure, `attempts` increments and the alert backs off ×4 from 1 minute, capped at 6h. At `EMAIL_MAX_ATTEMPTS` it becomes `failed`, keeping `last_error`. One failure doesn't stop the batch.
+- When email is not set up, nothing is sent and attempts aren't spent. Each pending alert's `last_error` says which settings are missing (written once), and the alerts go out when email is configured.
+- **Delivery is at-least-once:** a crash between the provider accepting and the row being marked sent re-sends after restart. Marking first would silently lose alerts instead.
+- `buildAlertEmail` uses `alertContent.js` and `escapeMarkup`, so the subject and wording match RSS and the evidence page.
+
+### RSS feeds (`backend/feeds.js`)
+`GET /feed.xml` (every watch) and `GET /watches/:id/feed.xml` (one watch), mounted at the app root and guarded by `requireLinkToken`. Each feed renders the latest 50 `sent` RSS alerts as RSS 2.0 on every request. The change's summary is read at render time, so an explanation that lands after the alert still appears. The item `guid` is `watchdog-alert-<alertId>`, which stays stable so a reader never shows an item twice. The item `<link>` opens the evidence page.
+
+- The token is checked before the watch lookup, so ids can't be probed.
+- The item body is HTML built from escaped strings and then XML-escaped as a whole, so `<script>` reaches the reader as visible text.
+- The body quotes the diff itself, labelled Removed/Added and capped at 6 paragraphs, with links to the evidence page and the live page.
+
 ### Watches API
-`backend/watches.js`, mounted at `/watches`. `POST` (validates url/frequency/selector, runs `validateScrapeUrl`, inserts due-immediately so the scheduler takes the baseline), `GET /`, `GET /:id`, `PATCH /:id` (status only), `DELETE /:id`, `GET /:id/snapshots`, `GET /:id/changes`, `POST /:id/check`. `getWatchOr404` centralizes id validation (400 on a malformed id, 404 on a missing one) — reuse it for new routes. Rows are serialized camelCase at the boundary; the DB uses snake_case.
+`backend/watches.js`, mounted at `/watches`. `POST` (validates url/frequency/selector/`alertChannels`, runs `validateScrapeUrl`, inserts due-immediately so the scheduler takes the baseline), `GET /`, `GET /:id`, `PATCH /:id` (`status` and/or `alertChannels`; a bad field rejects the whole request), `DELETE /:id`, `GET /:id/snapshots`, `GET /:id/changes` (includes `feedback`), `PUT`/`DELETE /:id/changes/:changeId/feedback`, `GET /:id/alerts`, `POST /:id/check`. `getWatchOr404` centralizes id validation (400 on a malformed id, 404 on a missing one) — reuse it for new routes. Rows are serialized camelCase at the boundary; the DB uses snake_case.
 
 ### Frontend layout
 ~97-line `src/App.js` composing extracted pieces — write new frontend code in that shape:
