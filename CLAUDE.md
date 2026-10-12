@@ -78,7 +78,7 @@ Open issues labelled `Automated` are worked by a scheduled routine: every 6 hour
 1. **Maintain before starting.** At most one open PR from an `automated/` branch may be in flight, not counting PRs labelled `needs-owner`. If one exists: merge `master` into it (a merge commit, never a rebase), fix red CI, answer every open review thread, then merge it if it qualifies (see "Merge or stop") and end the run without starting new work.
 2. **Answered questions.** For each `needs-owner` PR where the owner has replied after the routine's question, act on the answer, remove the label, and treat it as the PR in flight.
 3. **A red `master` comes first.** If CI on `master` went red after an automated merge, open and merge a revert of that merge before anything else.
-4. **Pick the next issue:** open, labelled `Automated`, with no open PR from any branch that references it, and no closed-unmerged PR from `automated/issue-<N>` (that means the owner rejected it). Order: #15, #28, #35, #25, #24, #32, #30, #29, #19, #47, #38, #39, #33, then any other `Automated` issue, lowest number first. #35 goes before the other Docker issues so CI builds the images before they change.
+4. **Pick the next issue:** open, labelled `Automated`, with no open PR from any branch that references it, no closed-unmerged PR from `automated/issue-<N>` (that means the owner rejected it), and no merged one (on a partial issue, the automatable part is done). Order: #15, #28, #35, #25, #24, #32, #30, #29, #19, #47, #38, #39, #33, then any other `Automated` issue, lowest number first. #35 goes before the other Docker issues so CI builds the images before they change.
 5. **Research, then plan.** Read the issue and its comments, docs/PLAN.md, the sections of this file that cover the code involved, and that code and its tests. Write a plan before editing: files, rough size, approach, and what is out of scope.
 6. **Build it** on `automated/issue-<N>` from a fresh `origin/master`, validate, self-review, push, open the PR, then merge or stop.
 
@@ -87,7 +87,7 @@ Open issues labelled `Automated` are worked by a scheduled routine: every 6 hour
 - No drive-by refactors, renames, reformatting, dependency bumps, or fixes that belong to another issue.
 - Above about 300 changed lines of non-test, non-lockfile code, split the work into issue-sized steps or stop for the owner.
 
-Some issues are only partly automatable. Do this part and list the rest under "Out of scope":
+Some issues are only partly automatable. Do this part, list the rest under "Out of scope", and start the PR body with `Part of #N` instead of `Closes #N`, so merging leaves the issue open for the remaining work:
 - **#32:** `dependabot.yml`, a CodeQL workflow, and `npm audit --omit=dev --audit-level=high` for `backend/` only; the frontend audit waits on #31. No repository settings.
 - **#29:** code and tests only. The hosting-specific `TRUST_PROXY` documentation waits on #23.
 - **#19:** backend only. Showing the message in the UI waits on #16.
@@ -114,7 +114,7 @@ Stop for the owner only when:
 To stop, label the PR `needs-owner` and post one comment that asks the question as options, recommendation first. Then the next issue can start.
 
 ### PR description
-Fill in `.github/pull_request_template.md`. A reader who never opened the issue should understand what was wrong and what changed.
+Fill in `.github/pull_request_template.md`, starting with `Closes #N` (or `Part of #N` for a partial issue). A reader who never opened the issue should understand what was wrong and what changed.
 
 ### Run report
 A run that implements or merges a fix ends its session (not GitHub) with a report that teaches the owner:
