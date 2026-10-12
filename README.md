@@ -93,13 +93,16 @@ CI (`.github/workflows/ci.yml`) runs both suites plus lint and a production fron
 
 Single fixed owner for now (no accounts yet; see `docs/PLAN.md` Phase 2). All endpoints are on the Express backend.
 
-- `POST /watches` — create a watch. Body: `{ url, frequency: 'daily'|'weekly', selector? }`
+- `POST /watches` — create a watch. Body: `{ url, frequency: 'daily'|'weekly', selector?, alertChannels? }`. `alertChannels` is any of `['email', 'rss']` and defaults to `['rss']`.
 - `GET /watches` — list all watches
 - `GET /watches/:id` — get one watch
-- `PATCH /watches/:id` — update status. Body: `{ status: 'active'|'paused'|'broken' }`
-- `DELETE /watches/:id` — delete a watch and its snapshots/changes
+- `PATCH /watches/:id` — update status and/or alert channels. Body: `{ status?: 'active'|'paused'|'broken', alertChannels?: [...] }`
+- `DELETE /watches/:id` — delete a watch and everything recorded for it
 - `GET /watches/:id/snapshots` — list stored snapshots (newest first)
-- `GET /watches/:id/changes` — list detected changes with their diff (newest first)
+- `GET /watches/:id/changes` — list detected changes with their diff and the user's `feedback` (newest first)
+- `PUT /watches/:id/changes/:changeId/feedback` — rate a change. Body: `{ vote: 'useful'|'noise' }`. Voting again replaces the vote.
+- `DELETE /watches/:id/changes/:changeId/feedback` — clear a change's rating
+- `GET /watches/:id/alerts` — list the watch's alerts and their delivery status (newest first)
 - `POST /watches/:id/check` — run the snapshot pipeline now: fetch the page, hash its content, store a new snapshot only if the hash changed, and diff it against the previous snapshot if one exists. Active watches are also checked automatically on their own cadence by the scheduler; this endpoint is for triggering a check out of band.
 
 The diff is a deterministic paragraph-level comparison (`backend/diff.js`) with noise filtering for timestamps, counters and copyright-year footers — no LLM is involved in detection.
@@ -111,6 +114,17 @@ Once the diff has proved a change, `backend/explainer.js` asks the LLM what kind
 The model is never asked to quote. It receives the changed paragraphs numbered, and replies with the numbers its summary rests on; the quoted text is resolved from the stored diff. A quote the model was not given therefore cannot be produced. A summary that asserts a figure absent from the diff is discarded, leaving the change recorded but unexplained.
 
 Cost is bounded by the diff running first: an unchanged page makes no model call at all. A diff larger than `EXPLAIN_MAX_PARAGRAPHS` is recorded as a `layout_change` without calling the model, since a redesign is not a change in terms. Set `EXPLAIN_ENABLED=false` to detect changes without explaining them, which also allows running without a `GROQ_API_KEY`.
+
+### Alerts and RSS feeds
+
+Each detected change raises one alert per channel the watch has switched on. A watch can use RSS, email, both or neither. If the same change repeats on the same watch within `ALERT_REPEAT_WINDOW_MS` (7 days), for example a page flipping between two versions, it is recorded as `suppressed` instead of alerting again.
+
+RSS feeds are off until `FEED_TOKEN` is set. Then:
+
+- `GET /feed.xml?token=<FEED_TOKEN>` — changes across every watched page
+- `GET /watches/:id/feed.xml?token=<FEED_TOKEN>` — changes on one page
+
+Paste either link into a feed reader. The token is the secret part of the link, so treat the link like a password. Email delivery is not built yet; email alerts are recorded as `pending`.
 
 ### Scheduler
 
@@ -145,6 +159,8 @@ Active watches are checked on their `frequency` (daily or weekly) by a scheduler
 - `EXPLAIN_ENABLED`: Set to `false` to record changes without calling the LLM (default: enabled)
 - `EXPLAIN_MAX_PARAGRAPHS`: Diffs larger than this are recorded as a layout change without a model call (default: 40)
 - `EXPLAIN_MAX_CHARS`: Character budget for the explainer prompt (default: 8000)
+- `ALERT_REPEAT_WINDOW_MS`: A repeat of the same change on the same watch within this window is suppressed (default: 604800000, 7 days)
+- `FEED_TOKEN`: Secret required in RSS feed links; feeds are off while it is empty
 
 See `backend/.env.example` for a ready-to-copy template.
 

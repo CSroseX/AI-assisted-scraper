@@ -11,6 +11,7 @@ const { SCREENSHOT_DIR, validateScrapeUrl, captureSnapshot, scraperBusy, closeSc
 const { closeDb } = require('./db');
 const { callGroq, withRetries, clampTextForModel } = require('./groq');
 const watchesRouter = require('./watches');
+const feedsRouter = require('./feeds');
 const scheduler = require('./scheduler');
 
 function parseAllowedOrigins(raw = '') {
@@ -341,6 +342,7 @@ app.post('/summarize', async (req, res) => {
 });
 
 app.use('/watches', watchesRouter);
+app.use(feedsRouter);
 
 app.get('/scheduler/status', (_req, res) => {
   res.json(scheduler.status());

@@ -420,11 +420,11 @@ test('PATCH /watches/:id changes alert channels without touching status', async 
 test('a detected change queues an alert on each enabled channel', async (t) => {
   const { watch, change } = await watchWithOneChange(t, 'https://alerts.test', { alertChannels: ['email', 'rss'] });
   const alerts = await (await get(`/watches/${watch.id}/alerts`)).json();
-  assert.deepEqual(alerts.map((a) => a.channel).sort(), ['email', 'rss']);
-  for (const alert of alerts) {
-    assert.equal(alert.changeId, change.id);
-    assert.equal(alert.status, 'pending');
-  }
+  const byChannel = Object.fromEntries(alerts.map((a) => [a.channel, a]));
+  assert.deepEqual(Object.keys(byChannel).sort(), ['email', 'rss']);
+  assert.equal(byChannel.email.status, 'pending');
+  assert.equal(byChannel.rss.status, 'sent');
+  for (const alert of alerts) assert.equal(alert.changeId, change.id);
 });
 
 test('a baseline or an unchanged page queues no alerts', async (t) => {

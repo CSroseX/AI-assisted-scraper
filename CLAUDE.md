@@ -16,7 +16,9 @@ Built: RL/Chroma cleanup, SQLite storage + watches API, snapshot pipeline, diff 
 
 Remaining in Phase 1 — **this is where new work goes**:
 
-- **Step 6, Alerts — storage done, delivery not.** Decided: users choose email, RSS or both per watch. Email goes through nodemailer, configured by env vars, with a test inbox (Ethereal/Mailtrap) during development and a free-tier delivery service later. Email goes to one app-wide address held in settings until accounts exist. RSS is served both per watch and as one global feed. Built: the `alerts` and `feedback` tables, per-watch channel flags, alert queueing and the feedback API (see "Alerts and feedback" below). **Still to build:** the RSS feeds, email sending, and links from each alert to before/after snapshots and screenshots so a user can verify the claim. Nothing is sent yet; every queued alert stays `pending`.
+- **Step 6, Alerts — storage done, delivery not.** Decided: users choose email, RSS or both per watch. Email goes through nodemailer, configured by env vars, with a test inbox (Ethereal/Mailtrap) during development and a free-tier delivery service later. Email goes to one app-wide address held in settings until accounts exist. RSS is served both per watch and as one global feed. Built: the `alerts` and `feedback` tables, per-watch channel flags, alert queueing, the feedback API, and RSS feeds (see "Alerts and feedback" and "RSS feeds" below). **Still to build:** email sending, which picks up `pending` email alerts, and links from each alert to before/after snapshots and screenshots so a user can verify the claim. Those links are blocked by the next point.
+- **Watch screenshots are deleted after an hour.** `cleanupScreenshots` in `index.js` deletes every `.png` in `SCREENSHOT_DIR` older than `SCREENSHOT_TTL_MS`, including those that `snapshots.screenshot_path` still references. Every stored watch screenshot is therefore a dead link after an hour. Fix this before alerts link to screenshots.
+- **CORS only allows `GET`/`POST`/`OPTIONS`** (`corsOptions.methods` in `index.js`). A browser on another origin cannot call `PATCH`/`DELETE /watches/:id` or `PUT`/`DELETE` feedback. The current chat UI never does, but step 7's UI will.
 - **Step 7, UI.** The frontend is **still the original chat demo** and has had no watchdog work at all — no watch list, no change timeline, no diff viewer, no feedback thumbs. Also needs honest failure messaging: many ToS pages sit behind logins or bot protection, and the system should say *why* a page can't be read rather than failing quietly.
 
 The `users` table and snapshot retention/size caps are also unbuilt. Accounts are Phase 2 — there is a single implicit owner for now, and no `users` table.
@@ -39,7 +41,7 @@ cd backend
 npm install
 npm start                                  # :5000, starts the scheduler too
 npm run dev                                # nodemon
-npm test                                   # node:test runner (no jest/mocha); 131 tests
+npm test                                   # node:test runner (no jest/mocha); 142 tests
 node --test ssrf.test.js                   # single file
 node --test --test-name-pattern "isPrivateIPv4" ssrf.test.js   # single test
 npm exec playwright install chromium       # required once before scraping works
@@ -152,7 +154,14 @@ Dedup has two layers:
 - **Hard:** a unique index on `(change_id, channel)`. A retry can never queue the same change twice on one channel.
 - **Soft:** a repeat of the same `diff_hash` on the same watch and channel within `ALERT_REPEAT_WINDOW_MS` (default 7 days) is stored as `suppressed` instead of `pending`. This stops a page that flips between two versions from alerting every check. Only non-suppressed rows open a window, so a flapping page re-alerts once per window, and a change that genuinely recurs later isn't lost. The check-then-insert is race-free because it runs inside the transaction and under `runCheck`'s per-watch lock.
 
-Alert statuses are `pending | sent | failed | suppressed`, and there are `attempts`/`last_error`/`sent_at` columns ready for delivery. `feedback` holds one `useful | noise` vote per change (`change_id` UNIQUE, upserted), and it rates the *change*, not the alert. The "fewer than 1 in 3 alerts marked noise" goal in PLAN.md is measured from it.
+Alert statuses are `pending | sent | failed | suppressed`, and there are `attempts`/`last_error`/`sent_at` columns ready for email delivery. **An RSS alert is stored as `sent` immediately**, because RSS has no delivery step: being in the feed is being delivered. Email alerts start as `pending`. `feedback` holds one `useful | noise` vote per change (`change_id` UNIQUE, upserted), and it rates the *change*, not the alert. The "fewer than 1 in 3 alerts marked noise" goal in PLAN.md is measured from it.
+
+### RSS feeds (`backend/feeds.js`)
+`GET /feed.xml` (every watch) and `GET /watches/:id/feed.xml` (one watch), mounted at the app root. Each feed renders the latest 50 `sent` RSS alerts as RSS 2.0 on every request. The change's summary is read at render time, so an explanation that lands after the alert still appears. The item `guid` is `watchdog-alert-<alertId>`, which stays stable so a reader never shows an item twice.
+
+- **Token-guarded.** Feed readers fetch from their own servers, so in deployment the feed is the one URL that must be public. `requireFeedToken` needs `?token=` to match `FEED_TOKEN` (compared via SHA-256 and `timingSafeEqual`). Feeds return 503 until `FEED_TOKEN` is set, and the token is checked before the watch lookup so ids can't be probed.
+- **Scraped text is untrusted.** The item body is HTML built with every page-derived string escaped, then XML-escaped as a whole, so `<script>` reaches the reader as visible text. `escapeXml` also drops characters XML 1.0 forbids, since one would break the whole feed.
+- **Evidence is the diff itself**, labelled Removed/Added and capped at 6 paragraphs. No summary falls back to an honest "no verified summary yet" line.
 
 ### Watches API
 `backend/watches.js`, mounted at `/watches`. `POST` (validates url/frequency/selector/`alertChannels`, runs `validateScrapeUrl`, inserts due-immediately so the scheduler takes the baseline), `GET /`, `GET /:id`, `PATCH /:id` (`status` and/or `alertChannels`; a bad field rejects the whole request), `DELETE /:id`, `GET /:id/snapshots`, `GET /:id/changes` (includes `feedback`), `PUT`/`DELETE /:id/changes/:changeId/feedback`, `GET /:id/alerts`, `POST /:id/check`. `getWatchOr404` centralizes id validation (400 on a malformed id, 404 on a missing one) — reuse it for new routes. Rows are serialized camelCase at the boundary; the DB uses snake_case.

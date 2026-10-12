@@ -40,13 +40,15 @@ function queueAlerts(db, { watch, changeId, diffHash, now }) {
      LIMIT 1`
   );
   const insert = db.prepare(
-    `INSERT OR IGNORE INTO alerts (watch_id, change_id, channel, diff_hash, status, created_at)
-     VALUES (?, ?, ?, ?, ?, ?)`
+    `INSERT OR IGNORE INTO alerts (watch_id, change_id, channel, diff_hash, status, sent_at, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
   );
 
   for (const channel of enabledChannels(watch)) {
     const repeat = recentRepeat.get(watch.id, channel, diffHash, now - REPEAT_WINDOW_MS);
-    insert.run(watch.id, changeId, channel, diffHash, repeat ? 'suppressed' : 'pending', now);
+    // RSS has no delivery step: being stored is being published to the feed.
+    const status = repeat ? 'suppressed' : channel === 'rss' ? 'sent' : 'pending';
+    insert.run(watch.id, changeId, channel, diffHash, status, status === 'sent' ? now : null, now);
   }
 }
 

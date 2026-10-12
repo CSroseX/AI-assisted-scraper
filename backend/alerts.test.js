@@ -70,11 +70,11 @@ test('enabledChannels reads the watch row flags', () => {
 
 // --- queueing ---------------------------------------------------------------
 
-test('a change queues one pending alert per enabled channel', () => {
+test('a change queues one alert per enabled channel: email waits, RSS is published at once', () => {
   const watch = makeWatch({ email: 1, rss: 1 });
   queue(watch, 'hash-a', 1000);
   const rows = alertsFor(watch);
-  assert.deepEqual(rows.map((r) => [r.channel, r.status]), [['email', 'pending'], ['rss', 'pending']]);
+  assert.deepEqual(rows.map((r) => [r.channel, r.status, r.sent_at]), [['email', 'pending', null], ['rss', 'sent', 1000]]);
 });
 
 test('a watch with every channel off queues nothing', () => {
@@ -95,14 +95,14 @@ test('the same diff repeating inside the window is suppressed, not re-sent', () 
   const watch = makeWatch({ rss: 1 });
   queue(watch, 'flap', 1000);
   queue(watch, 'flap', 1000 + REPEAT_WINDOW_MS - 1);
-  assert.deepEqual(alertsFor(watch).map((r) => r.status), ['pending', 'suppressed']);
+  assert.deepEqual(alertsFor(watch).map((r) => [r.status, r.sent_at]), [['sent', 1000], ['suppressed', null]]);
 });
 
 test('the same diff after the window alerts again, so a recurring change is not lost', () => {
   const watch = makeWatch({ rss: 1 });
   queue(watch, 'recur', 1000);
   queue(watch, 'recur', 1000 + REPEAT_WINDOW_MS + 1);
-  assert.deepEqual(alertsFor(watch).map((r) => r.status), ['pending', 'pending']);
+  assert.deepEqual(alertsFor(watch).map((r) => r.status), ['sent', 'sent']);
 });
 
 test('a page that keeps flapping is reminded once per window, not never', () => {
@@ -111,8 +111,8 @@ test('a page that keeps flapping is reminded once per window, not never', () => 
   const day = 24 * 60 * 60 * 1000;
   const days = Math.ceil(REPEAT_WINDOW_MS / day) + 1;
   for (let d = 0; d <= days; d++) queue(watch, 'daily-flap', d * day + 1);
-  const pending = alertsFor(watch).filter((r) => r.status === 'pending');
-  assert.equal(pending.length, 2);
+  const published = alertsFor(watch).filter((r) => r.status === 'sent');
+  assert.equal(published.length, 2);
 });
 
 test('repeats are judged per watch: the same edit on another page still alerts', () => {
@@ -120,7 +120,7 @@ test('repeats are judged per watch: the same edit on another page still alerts',
   const second = makeWatch({ rss: 1 });
   queue(first, 'shared-edit', 1000);
   queue(second, 'shared-edit', 1001);
-  assert.equal(alertsFor(second)[0].status, 'pending');
+  assert.equal(alertsFor(second)[0].status, 'sent');
 });
 
 test('repeats are judged per channel: email turned on later still gets its first alert', () => {
@@ -130,7 +130,7 @@ test('repeats are judged per channel: email turned on later still gets its first
   const updated = getDb().prepare('SELECT * FROM watches WHERE id = ?').get(watch.id);
   queue(updated, 'per-channel', 2000);
   const rows = alertsFor(watch).map((r) => [r.channel, r.status]);
-  assert.deepEqual(rows, [['rss', 'pending'], ['email', 'pending'], ['rss', 'suppressed']]);
+  assert.deepEqual(rows, [['rss', 'sent'], ['email', 'pending'], ['rss', 'suppressed']]);
 });
 
 test('deleting a watch removes its alerts and feedback', () => {
