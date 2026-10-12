@@ -86,7 +86,9 @@ const ADDED_COLUMNS = [
   // Per-watch alert channels. RSS is on by default: it needs no setup and sends
   // nothing anywhere. Email is opt-in.
   { table: 'watches', column: 'alert_rss', ddl: 'ALTER TABLE watches ADD COLUMN alert_rss INTEGER NOT NULL DEFAULT 1' },
-  { table: 'watches', column: 'alert_email', ddl: 'ALTER TABLE watches ADD COLUMN alert_email INTEGER NOT NULL DEFAULT 0' }
+  { table: 'watches', column: 'alert_email', ddl: 'ALTER TABLE watches ADD COLUMN alert_email INTEGER NOT NULL DEFAULT 0' },
+  // When a failed email may be retried; NULL means as soon as it is due.
+  { table: 'alerts', column: 'next_attempt_at', ddl: 'ALTER TABLE alerts ADD COLUMN next_attempt_at INTEGER' }
 ];
 
 function applyAddedColumns(database) {

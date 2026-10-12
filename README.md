@@ -125,7 +125,11 @@ RSS feeds and evidence pages are off until `LINK_TOKEN` is set. Then:
 - `GET /watches/:id/feed.xml?token=<LINK_TOKEN>` — changes on one page
 - `GET /evidence/changes/:changeId?token=<LINK_TOKEN>` — the evidence page every alert links to: the summary, the exact changed paragraphs, and the before and after versions with their screenshots, so you can check the claim yourself
 
-Paste a feed link into a feed reader. The token is the secret part of every link, so treat the links like a password. Set `PUBLIC_BASE_URL` to the address the backend is reached at, so links in feeds and emails point to the right place. Email delivery is not built yet; email alerts are recorded as `pending`.
+Paste a feed link into a feed reader. The token is the secret part of every link, so treat the links like a password. Set `PUBLIC_BASE_URL` to the address the backend is reached at, so links in feeds and emails point to the right place.
+
+**Email.** Email alerts go to `ALERT_EMAIL_TO` through any SMTP server, set with `SMTP_*` in `backend/.env`. Each email holds the summary, the changed text and the evidence link. It waits for the AI summary (at most 10 minutes) and is retried with growing gaps (1m, 4m, 16m…). After `EMAIL_MAX_ATTEMPTS` tries it is marked `failed`, and the reason is kept on the alert. Until email is configured, alerts wait as `pending` and record which setting is missing.
+
+To try it without signing up anywhere, set `EMAIL_TRANSPORT=ethereal`. Each email goes to a throwaway test inbox, and the server logs a link to view it. Those pages are public, so use a throwaway `LINK_TOKEN` while testing.
 
 ### Scheduler
 
@@ -164,6 +168,11 @@ Active watches are checked on their `frequency` (daily or weekly) by a scheduler
 - `ALERT_REPEAT_WINDOW_MS`: A repeat of the same change on the same watch within this window is suppressed (default: 604800000, 7 days)
 - `LINK_TOKEN`: Secret required in RSS feed and evidence page links; both are off while it is empty
 - `PUBLIC_BASE_URL`: Address the backend is reached at, used to build links in feeds and emails (default: `http://localhost:<PORT>`)
+- `EMAIL_TRANSPORT`: `smtp` (default) or `ethereal` for a throwaway test inbox
+- `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS`: The SMTP server for email alerts (port defaults to 587; 465 uses TLS from the start)
+- `ALERT_EMAIL_FROM` / `ALERT_EMAIL_TO`: Sender, and the one address that receives every email alert
+- `EMAIL_TICK_MS`: How often waiting emails are sent (default: 30000)
+- `EMAIL_MAX_ATTEMPTS`: Tries before an email alert is marked `failed` (default: 5)
 
 See `backend/.env.example` for a ready-to-copy template.
 

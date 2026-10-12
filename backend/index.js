@@ -15,6 +15,8 @@ const watchesRouter = require('./watches');
 const feedsRouter = require('./feeds');
 const evidencePageRouter = require('./evidencePage');
 const scheduler = require('./scheduler');
+const emailAlerts = require('./emailAlerts');
+const { checkEmailSetup } = require('./mailer');
 
 function parseAllowedOrigins(raw = '') {
   const parsed = String(raw)
@@ -379,10 +381,21 @@ if (require.main === module) {
     scheduler.start();
     console.log(`Scheduler started, ticking every ${scheduler.TICK_MS}ms`);
   }
+  emailAlerts.start();
+  const email = checkEmailSetup();
+  console.log(email.ok
+    ? `Email alerts on (${email.mode})`
+    : `Email alerts not set up, missing: ${email.missing.join(', ')}. Email alerts will wait until they are set.`);
+  if (email.mode === 'ethereal') {
+    // Ethereal message pages are public, and every alert email carries an
+    // evidence link with LINK_TOKEN in it.
+    console.warn('Ethereal is a test inbox: anyone with a message link can read it, including the LINK_TOKEN in its links. Use a throwaway LINK_TOKEN while testing.');
+  }
   app.listen(PORT, () => console.log(`Server is running on port ${PORT}`));
 
   const shutdown = async () => {
     scheduler.stop();
+    emailAlerts.stop();
     await closeScraper();
     closeDb();
     process.exit(0);

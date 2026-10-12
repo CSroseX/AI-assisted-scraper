@@ -12,11 +12,17 @@ Its governing principle for new work: **detect deterministically, explain with t
 
 ### What's built vs. what's left
 
-Built: RL/Chroma cleanup, SQLite storage + watches API, snapshot pipeline, diff engine with noise filtering, persistent scheduler, LLM explainer.
+Built: RL/Chroma cleanup, SQLite storage + watches API, snapshot pipeline, diff engine with noise filtering, persistent scheduler, LLM explainer, and **alerts (step 6)**: per-watch email/RSS channels, dedup, RSS feeds, email, durable screenshots, and an evidence page per change.
+
+Step 6 decisions, for context:
+- Users choose email, RSS or both per watch.
+- Email goes through nodemailer, configured by env vars: Ethereal during development, then a free-tier SMTP provider.
+- Email goes to one app-wide address until accounts exist.
+- RSS is served per watch and as one global feed.
+- Open question: whether `cosmetic` changes should alert at all. They do today; skipping them would cut noise but trusts the LLM's label.
 
 Remaining in Phase 1 — **this is where new work goes**:
 
-- **Step 6, Alerts — storage done, delivery not.** Decided: users choose email, RSS or both per watch. Email goes through nodemailer, configured by env vars, with a test inbox (Ethereal/Mailtrap) during development and a free-tier delivery service later. Email goes to one app-wide address held in settings until accounts exist. RSS is served both per watch and as one global feed. Built: the `alerts` and `feedback` tables, per-watch channel flags, alert queueing, the feedback API, RSS feeds, durable screenshots, and the evidence page each alert links to (see the "Alerts and feedback", "Evidence storage", "Evidence page" and "RSS feeds" sections below). **Still to build:** email sending, which picks up `pending` email alerts.
 - **CORS only allows `GET`/`POST`/`OPTIONS`** (`corsOptions.methods` in `index.js`). A browser on another origin cannot call `PATCH`/`DELETE /watches/:id` or `PUT`/`DELETE` feedback. The current chat UI never does, but step 7's UI will.
 - **Step 7, UI.** The frontend is **still the original chat demo** and has had no watchdog work at all — no watch list, no change timeline, no diff viewer, no feedback thumbs. Also needs honest failure messaging: many ToS pages sit behind logins or bot protection, and the system should say *why* a page can't be read rather than failing quietly.
 
@@ -38,9 +44,9 @@ npm test -- --watchAll=false -t "renders app title"   # single test by name
 ```bash
 cd backend
 npm install
-npm start                                  # :5000, starts the scheduler too
+npm start                                  # :5000, starts the scheduler and the email sender too
 npm run dev                                # nodemon
-npm test                                   # node:test runner (no jest/mocha); 161 tests
+npm test                                   # node:test runner (no jest/mocha); 179 tests
 node --test ssrf.test.js                   # single file
 node --test --test-name-pattern "isPrivateIPv4" ssrf.test.js   # single test
 npm exec playwright install chromium       # required once before scraping works
@@ -176,6 +182,22 @@ Feeds and evidence pages are opened by feed readers and email clients, not by ou
 `GET /evidence/changes/:changeId` is the page every alert links to. It's server-rendered, because alerts needed a working link before the step 7 UI. It shows the summary (or the honest fallback), every changed paragraph, and the before and after versions, each with its capture time, screenshot and full text in a `<details>`. Each screenshot sits in a scroll frame, because full-page captures of long terms pages run to thousands of pixels. `GET /evidence/files/:name` serves the screenshots, resolving names only through `evidenceFile()`.
 
 The page shows scraped content, so it sends a CSP with `default-src 'none'` and **no script source at all**, plus `Referrer-Policy: no-referrer`; otherwise following a link would leak the token. External links also carry `rel="noreferrer"`. Screenshot `src`s are relative (`../files/...`), so the page still works behind a path prefix.
+
+### Email (`backend/mailer.js`, `backend/emailAlerts.js`)
+`mailer.js` owns the transport, and everything is set by env vars, so switching providers is a settings change:
+- `EMAIL_TRANSPORT=smtp` (default) uses `SMTP_HOST`/`PORT`/`USER`/`PASS`.
+- `EMAIL_TRANSPORT=ethereal` creates a throwaway test inbox and logs a public view link per message.
+- `checkEmailSetup()` returns exactly which settings are missing.
+- `createSender({ transport })` takes an injected transport, so **tests never touch the network**. The real transport is created on first send, and a failed creation is retried rather than cached.
+- Messages set `disableFileAccess`/`disableUrlAccess`.
+- nodemailer is pinned to `^10.0.11`. Everything up to 10.0.5 has 15 advisories, including recipient-domain bypasses and SMTP injection.
+
+`emailAlerts.js` is the sender, built like the scheduler: all state is in `alerts` (`status`, `attempts`, `next_attempt_at`, `last_error`), and `setInterval` (`EMAIL_TICK_MS`) is only a heartbeat. `deliverPendingEmails({ now, send, setup })` is the injectable seam.
+- It sends `pending` email alerts whose watch still has `alert_email = 1`, once the change has **settled**: explained, failed to explain, `EXPLAIN_ENABLED=false`, or `SETTLE_MS` (10 min) has passed. This way an email carries the summary when there is one, but never waits forever.
+- On failure, `attempts` increments and the alert backs off ×4 from 1 minute, capped at 6h. At `EMAIL_MAX_ATTEMPTS` it becomes `failed`, keeping `last_error`. One failure doesn't stop the batch.
+- When email is not set up, nothing is sent and attempts aren't spent. Each pending alert's `last_error` says which settings are missing (written once), and the alerts go out when email is configured.
+- **Delivery is at-least-once:** a crash between the provider accepting and the row being marked sent re-sends after restart. Marking first would silently lose alerts instead.
+- `buildAlertEmail` uses `alertContent.js` and `escapeMarkup`, so the subject and wording match RSS and the evidence page.
 
 ### RSS feeds (`backend/feeds.js`)
 `GET /feed.xml` (every watch) and `GET /watches/:id/feed.xml` (one watch), mounted at the app root and guarded by `requireLinkToken`. Each feed renders the latest 50 `sent` RSS alerts as RSS 2.0 on every request. The change's summary is read at render time, so an explanation that lands after the alert still appears. The item `guid` is `watchdog-alert-<alertId>`, which stays stable so a reader never shows an item twice. The item `<link>` opens the evidence page.

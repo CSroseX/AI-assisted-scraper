@@ -427,6 +427,26 @@ test('a detected change queues an alert on each enabled channel', async (t) => {
   for (const alert of alerts) assert.equal(alert.changeId, change.id);
 });
 
+test('end to end: a page change detected by a check is emailed once', async (t) => {
+  const { deliverPendingEmails } = require('./emailAlerts');
+  const { watch, change } = await watchWithOneChange(t, 'https://e2e-mail.test/pricing', { alertChannels: ['email'] });
+
+  const sent = [];
+  const send = async (message) => { sent.push(message); return { messageId: '<e2e@test>' }; };
+  const ready = { ok: true, mode: 'smtp', missing: [] };
+  await deliverPendingEmails({ send, setup: ready });
+  await deliverPendingEmails({ send, setup: ready });
+
+  // Earlier tests in this file queue email alerts too; look only at ours.
+  const ours = sent.filter((m) => m.subject.endsWith('e2e-mail.test'));
+  assert.equal(ours.length, 1, 'sent exactly once across two passes');
+  assert.equal(ours[0].subject, 'Change detected on e2e-mail.test');
+  assert.match(ours[0].text, /Removed: Price: \$10\/month\./);
+  assert.match(ours[0].text, new RegExp(`/evidence/changes/${change.id}\\?token=`));
+  const [emailAlert] = await (await get(`/watches/${watch.id}/alerts`)).json();
+  assert.equal(emailAlert.status, 'sent');
+});
+
 test('a baseline or an unchanged page queues no alerts', async (t) => {
   t.mock.method(scraper, 'validateScrapeUrl', async (url) => ({ ok: true, parsedUrl: url }));
   const created = await (await post('/watches', { url: 'https://quiet.test', frequency: 'daily' })).json();
