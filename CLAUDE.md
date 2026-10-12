@@ -16,7 +16,7 @@ Built: RL/Chroma cleanup, SQLite storage + watches API, snapshot pipeline, diff 
 
 Remaining in Phase 1 — **this is where new work goes**:
 
-- **Step 6, Alerts — storage done, delivery not.** Decided: users choose email, RSS or both per watch. Email goes through nodemailer, configured by env vars, with a test inbox (Ethereal/Mailtrap) during development and a free-tier delivery service later. Email goes to one app-wide address held in settings until accounts exist. RSS is served both per watch and as one global feed. Built: the `alerts` and `feedback` tables, per-watch channel flags, alert queueing, the feedback API, and RSS feeds (see "Alerts and feedback" and "RSS feeds" below). **Still to build:** email sending, which picks up `pending` email alerts, and links from each alert to before/after snapshots and screenshots so a user can verify the claim. Screenshots are now durable (see "Evidence storage" below), so those links can be built.
+- **Step 6, Alerts — storage done, delivery not.** Decided: users choose email, RSS or both per watch. Email goes through nodemailer, configured by env vars, with a test inbox (Ethereal/Mailtrap) during development and a free-tier delivery service later. Email goes to one app-wide address held in settings until accounts exist. RSS is served both per watch and as one global feed. Built: the `alerts` and `feedback` tables, per-watch channel flags, alert queueing, the feedback API, RSS feeds, durable screenshots, and the evidence page each alert links to (see the "Alerts and feedback", "Evidence storage", "Evidence page" and "RSS feeds" sections below). **Still to build:** email sending, which picks up `pending` email alerts.
 - **CORS only allows `GET`/`POST`/`OPTIONS`** (`corsOptions.methods` in `index.js`). A browser on another origin cannot call `PATCH`/`DELETE /watches/:id` or `PUT`/`DELETE` feedback. The current chat UI never does, but step 7's UI will.
 - **Step 7, UI.** The frontend is **still the original chat demo** and has had no watchdog work at all — no watch list, no change timeline, no diff viewer, no feedback thumbs. Also needs honest failure messaging: many ToS pages sit behind logins or bot protection, and the system should say *why* a page can't be read rather than failing quietly.
 
@@ -40,7 +40,7 @@ cd backend
 npm install
 npm start                                  # :5000, starts the scheduler too
 npm run dev                                # nodemon
-npm test                                   # node:test runner (no jest/mocha); 153 tests
+npm test                                   # node:test runner (no jest/mocha); 161 tests
 node --test ssrf.test.js                   # single file
 node --test --test-name-pattern "isPrivateIPv4" ssrf.test.js   # single test
 npm exec playwright install chromium       # required once before scraping works
@@ -164,12 +164,25 @@ The scraper writes every screenshot to `SCREENSHOT_DIR` (`backend/screenshots`).
 - `sweepEvidence` runs with the transient cleanup and deletes evidence no snapshot references, such as a deleted watch's screenshots, once it's older than an hour. The grace period protects a copy whose snapshot is about to be committed.
 - At startup, `adoptLegacyScreenshots` moves screenshots of older snapshots out of the transient folder if they still exist, and clears the path if they don't. It runs before the first cleanup, which would otherwise delete them.
 
-### RSS feeds (`backend/feeds.js`)
-`GET /feed.xml` (every watch) and `GET /watches/:id/feed.xml` (one watch), mounted at the app root. Each feed renders the latest 50 `sent` RSS alerts as RSS 2.0 on every request. The change's summary is read at render time, so an explanation that lands after the alert still appears. The item `guid` is `watchdog-alert-<alertId>`, which stays stable so a reader never shows an item twice.
+### Public links (`backend/publicLinks.js`, `backend/alertContent.js`)
+Feeds and evidence pages are opened by feed readers and email clients, not by our frontend, so in deployment they are the only URLs that must be public. They share one secret:
 
-- **Token-guarded.** Feed readers fetch from their own servers, so in deployment the feed is the one URL that must be public. `requireFeedToken` needs `?token=` to match `FEED_TOKEN` (compared via SHA-256 and `timingSafeEqual`). Feeds return 503 until `FEED_TOKEN` is set, and the token is checked before the watch lookup so ids can't be probed.
-- **Scraped text is untrusted.** The item body is HTML built with every page-derived string escaped, then XML-escaped as a whole, so `<script>` reaches the reader as visible text. `escapeXml` also drops characters XML 1.0 forbids, since one would break the whole feed.
-- **Evidence is the diff itself**, labelled Removed/Added and capped at 6 paragraphs. No summary falls back to an honest "no verified summary yet" line.
+- `requireLinkToken` needs `?token=` to match `LINK_TOKEN` (compared via SHA-256 and `timingSafeEqual`), and returns 503 until `LINK_TOKEN` is set.
+- `publicUrl(path)` builds an absolute link from `PUBLIC_BASE_URL` (default `http://localhost:<PORT>`) with the token attached. Emails have no request to take a host from, so links never use `req.host`.
+- `escapeMarkup` escapes for both HTML and XML, and drops characters XML 1.0 forbids, since one would break a whole feed. **Every page-derived string goes through it**, because scraped text is untrusted.
+- `alertContent.js` holds the wording every channel shares: `alertTitle` ("Price change on host"), `NO_SUMMARY` and `evidenceUrl(changeId)`. Email must use it too, so a change reads the same everywhere.
+
+### Evidence page (`backend/evidencePage.js`)
+`GET /evidence/changes/:changeId` is the page every alert links to. It's server-rendered, because alerts needed a working link before the step 7 UI. It shows the summary (or the honest fallback), every changed paragraph, and the before and after versions, each with its capture time, screenshot and full text in a `<details>`. Each screenshot sits in a scroll frame, because full-page captures of long terms pages run to thousands of pixels. `GET /evidence/files/:name` serves the screenshots, resolving names only through `evidenceFile()`.
+
+The page shows scraped content, so it sends a CSP with `default-src 'none'` and **no script source at all**, plus `Referrer-Policy: no-referrer`; otherwise following a link would leak the token. External links also carry `rel="noreferrer"`. Screenshot `src`s are relative (`../files/...`), so the page still works behind a path prefix.
+
+### RSS feeds (`backend/feeds.js`)
+`GET /feed.xml` (every watch) and `GET /watches/:id/feed.xml` (one watch), mounted at the app root and guarded by `requireLinkToken`. Each feed renders the latest 50 `sent` RSS alerts as RSS 2.0 on every request. The change's summary is read at render time, so an explanation that lands after the alert still appears. The item `guid` is `watchdog-alert-<alertId>`, which stays stable so a reader never shows an item twice. The item `<link>` opens the evidence page.
+
+- The token is checked before the watch lookup, so ids can't be probed.
+- The item body is HTML built from escaped strings and then XML-escaped as a whole, so `<script>` reaches the reader as visible text.
+- The body quotes the diff itself, labelled Removed/Added and capped at 6 paragraphs, with links to the evidence page and the live page.
 
 ### Watches API
 `backend/watches.js`, mounted at `/watches`. `POST` (validates url/frequency/selector/`alertChannels`, runs `validateScrapeUrl`, inserts due-immediately so the scheduler takes the baseline), `GET /`, `GET /:id`, `PATCH /:id` (`status` and/or `alertChannels`; a bad field rejects the whole request), `DELETE /:id`, `GET /:id/snapshots`, `GET /:id/changes` (includes `feedback`), `PUT`/`DELETE /:id/changes/:changeId/feedback`, `GET /:id/alerts`, `POST /:id/check`. `getWatchOr404` centralizes id validation (400 on a malformed id, 404 on a missing one) — reuse it for new routes. Rows are serialized camelCase at the boundary; the DB uses snake_case.

@@ -12,12 +12,12 @@ process.env.RATE_LIMIT_MAX = '10000';
 process.env.EXPLAIN_ENABLED = 'false';
 
 const TOKEN = 'test-feed-token-0123456789';
-process.env.FEED_TOKEN = TOKEN;
+process.env.LINK_TOKEN = TOKEN;
+process.env.PUBLIC_BASE_URL = 'https://watchdog.example';
 
 const scraper = require('./scraper');
 const { app } = require('./index');
 const { getDb, closeDb } = require('./db');
-const { escapeXml } = require('./feeds');
 
 let server;
 let base;
@@ -58,12 +58,12 @@ async function watchWithChange(t, url, { before = 'Price: $10/month.', after = '
 
 // --- access -----------------------------------------------------------------
 
-test('feeds are off until FEED_TOKEN is set', async (t) => {
-  delete process.env.FEED_TOKEN;
-  t.after(() => { process.env.FEED_TOKEN = TOKEN; });
+test('feeds are off until LINK_TOKEN is set', async (t) => {
+  delete process.env.LINK_TOKEN;
+  t.after(() => { process.env.LINK_TOKEN = TOKEN; });
   const res = await feed('/feed.xml');
   assert.equal(res.status, 503);
-  assert.match((await res.json()).error, /FEED_TOKEN/);
+  assert.match((await res.json()).error, /LINK_TOKEN/);
 });
 
 test('a missing or wrong token is refused', async () => {
@@ -103,7 +103,11 @@ test('an item carries the title, the page link, the changed text and a stable id
   const [item] = items(xml);
   assert.ok(item, 'one item for one change');
   assert.match(item, /<title>Price change on shop\.test<\/title>/);
-  assert.match(item, /<link>https:\/\/shop\.test\/pricing<\/link>/);
+  // The title opens the evidence page, so the claim can be checked in one click.
+  const evidence = `https://watchdog.example/evidence/changes/\\d+\\?token=${TOKEN}`;
+  assert.match(item, new RegExp(`<link>${evidence}</link>`));
+  assert.match(item, new RegExp(`href=&quot;${evidence}&quot;&gt;See before and after`));
+  assert.match(item, /href=&quot;https:\/\/shop\.test\/pricing&quot;&gt;Open the page/);
   assert.match(item, /<guid isPermaLink="false">watchdog-alert-\d+<\/guid>/);
   assert.match(item, /<pubDate>[A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4}/);
   assert.match(item, /The monthly price rose from \$10 to \$12\./);
@@ -166,8 +170,8 @@ test('the global feed covers every watch, newest first; a watch feed covers only
   const second = await watchWithChange(t, 'https://second.test');
 
   const globalXml = await (await feed('/feed.xml')).text();
-  const firstAt = globalXml.indexOf('<link>https://first.test');
-  const secondAt = globalXml.indexOf('<link>https://second.test');
+  const firstAt = globalXml.indexOf('on first.test</title>');
+  const secondAt = globalXml.indexOf('on second.test</title>');
   assert.ok(firstAt > -1 && secondAt > -1, 'both watches appear');
   assert.ok(secondAt < firstAt, 'newest first');
 
@@ -175,13 +179,4 @@ test('the global feed covers every watch, newest first; a watch feed covers only
   assert.match(own, /first\.test/);
   assert.doesNotMatch(own, /second\.test/);
   assert.ok(second.id);
-});
-
-// --- escaping ---------------------------------------------------------------
-
-test('escapeXml escapes the five XML specials and drops forbidden characters', () => {
-  assert.equal(escapeXml(`<a href="x">'&'</a>`), '&lt;a href=&quot;x&quot;&gt;&apos;&amp;&apos;&lt;/a&gt;');
-  assert.equal(escapeXml('ok\u0000\u001F￾'), 'ok');
-  assert.equal(escapeXml('tab\tnewline\n'), 'tab\tnewline\n', 'tab and newline are allowed');
-  assert.equal(escapeXml(null), '');
 });

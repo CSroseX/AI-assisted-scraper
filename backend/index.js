@@ -13,6 +13,7 @@ const { sweepEvidence, adoptLegacyScreenshots } = require('./evidence');
 const { callGroq, withRetries, clampTextForModel } = require('./groq');
 const watchesRouter = require('./watches');
 const feedsRouter = require('./feeds');
+const evidencePageRouter = require('./evidencePage');
 const scheduler = require('./scheduler');
 
 function parseAllowedOrigins(raw = '') {
@@ -345,6 +346,7 @@ app.post('/summarize', async (req, res) => {
 
 app.use('/watches', watchesRouter);
 app.use(feedsRouter);
+app.use(evidencePageRouter);
 
 app.get('/scheduler/status', (_req, res) => {
   res.json(scheduler.status());
