@@ -1,6 +1,6 @@
 # Product plan: from demo to a usable tool
 
-Status: draft, high-level. Open decisions are listed at the end and are marked **(open)** where they affect the plan.
+Status (2026-10-13): Phase 0 and Phase 1 steps 0–6 are done; the backend watchdog works end to end for one user. Next: a trial on real pages to prove the "done when" criteria below, and step 7 (UI) in parallel. Open decisions are listed at the end and are marked **(open)** where they affect the plan.
 
 ## 1. Goal
 
@@ -59,7 +59,9 @@ Order reflects dependencies.
 4. ✅ **Scheduler:** jittered runs that survive restarts, respect the scrape concurrency cap, back off on failures, and mark a watch "broken" after repeated failures. (Scheduling state is persisted in `watches.next_check_at`/`failure_count`, so a watch due during downtime runs on the first tick back.)
 5. ✅ **Explainer:** runs only when a real diff exists. Classifies each change (price, fees, cancellation, data use, cosmetic) and explains it with quoted text; output is validated against the diff. (The model is given numbered diff paragraphs and replies with indices, so a quote it did not receive cannot be expressed; a diff above `EXPLAIN_MAX_PARAGRAPHS` is labelled `layout_change` without calling the model. Prompt not yet tuned against a real corpus — see step 3.)
 6. ✅ **Alerts:** email and RSS, with links to before/after and screenshots. Deduplicated. (Users pick email, RSS or both per watch. Each alert links to an evidence page with the changed text, both versions and their screenshots, which are now kept for as long as their snapshot exists. A change repeating within 7 days is suppressed. Email goes through any SMTP server, or a throwaway test inbox during development. Open: whether wording-only `cosmetic` changes should alert at all.)
-7. **UI:** watchlist, per-watch change timeline, diff viewer, and thumbs up/down on alerts stored as feedback. Clear messaging when a page cannot be read (login required, bot protection, heavy JavaScript).
+7. **UI:** watchlist, per-watch change timeline, diff viewer, and thumbs up/down on alerts stored as feedback. Clear messaging when a page cannot be read (login required, bot protection, heavy JavaScript). (The feedback API exists, storing `useful`/`noise` per change; the screens do not. The frontend is still the original demo.)
+
+**Real-page trial (next, runs alongside step 7):** watch 15–20 real pricing and ToS pages daily, rate every change as useful or noise, and record what breaks. Its findings tune the noise filter (step 3) and the explainer prompt (step 5), and it is how the criteria below get measured.
 
 **Done when:**
 - A real change on a real pricing or ToS page produces a correct, quoted alert within one check interval.
@@ -93,6 +95,7 @@ Order reflects dependencies.
 
 ## 7. Open decisions
 
-1. **Scope cut:** confirm removal of the RL and Chroma services in favour of SQLite only (assumed in this plan).
+1. ✅ **Scope cut:** done. The RL and Chroma services were removed in favour of SQLite only.
 2. ✅ **Alert channel for the MVP:** decided: both, chosen per watch.
-3. **Hosting target:** self-hosted on a small server with Docker Compose (assumed), or a hosted service for others. This decides how much weight Phase 2 carries.
+3. **Hosting target:** self-hosted on a small server with Docker Compose (assumed), or a hosted service for others. This decides how much weight Phase 2 carries. Constraint: free tiers only for now.
+4. **(open) Cosmetic changes:** should wording-only changes alert at all? They do today. Skipping them cuts noise but trusts the AI's label; the trial's noise ratings should decide.

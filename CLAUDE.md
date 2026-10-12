@@ -4,29 +4,71 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Branches and direction
 
-`master` is the integration branch; work lands on a feature branch and merges via PR. `dev` and `phase-1` are both **behind** `master` now and are stale — don't branch from them. Run `git fetch` before trusting a local view.
+`master` is the integration branch; work lands on a feature branch off an up-to-date `master` and merges via PR. Merged branches (`Schedular`, `explainer`, `alerts`) and the stale `dev`/`phase-1` may still exist locally or on the remote. Don't branch from them. Run `git fetch` before trusting a local view.
 
-`docs/PLAN.md` is the product direction, and it **pivoted the project**: from a scrape-and-rewrite demo to a **watchdog for ToS/pricing pages** that snapshots URLs on a schedule and alerts on meaningful changes. Phase 0 and Phase 1 steps 0–4 are done and merged.
+The GitHub CLI is installed at `C:\Program Files\GitHub CLI\gh.exe` and logged in as `CSroseX` with `repo` and `workflow` scopes, so use it for PRs and CI status (`gh run list`). A shell that started before it was installed won't have it on `PATH`; call it by full path (`"/c/Program Files/GitHub CLI/gh.exe"` from Git Bash). The claude.ai GitHub connector can read this repo but gets a 403 when creating PRs.
+
+`docs/PLAN.md` is the product direction, and it **pivoted the project**: from a scrape-and-rewrite demo to a **watchdog for ToS/pricing pages** that snapshots URLs on a schedule and alerts on meaningful changes. Phase 0 and Phase 1 steps 0–6 are done and merged; alerts landed in PR #12 on 2026-10-12, and CI is green.
 
 Its governing principle for new work: **detect deterministically, explain with the LLM** — changes come from a plain diff, the model only classifies and explains, and every claim must quote text present in the diff or be dropped.
 
-### What's built vs. what's left
+### Where we are (2026-10-13)
 
-Built: RL/Chroma cleanup, SQLite storage + watches API, snapshot pipeline, diff engine with noise filtering, persistent scheduler, LLM explainer, and **alerts (step 6)**: per-watch email/RSS channels, dedup, RSS feeds, email, durable screenshots, and an evidence page per change.
+The **backend watchdog is complete for one user**:
+- SQLite storage and the watches API
+- the snapshot pipeline, and the diff engine with noise filtering
+- the persistent scheduler
+- the grounded LLM explainer
+- alerts: per-watch email/RSS channels, two-layer dedup, RSS feeds, email with retries, durable evidence screenshots, and an evidence page per change
+- useful/noise feedback per change
+
+The backend has 179 tests, all offline.
+
+**Nothing has been run against real pages yet.** Every test uses synthetic content, so whether the noise filter and the explainer work on real ToS and pricing pages is unproven. The **frontend is still the original chat demo**.
 
 Step 6 decisions, for context:
 - Users choose email, RSS or both per watch.
 - Email goes through nodemailer, configured by env vars: Ethereal during development, then a free-tier SMTP provider.
 - Email goes to one app-wide address until accounts exist.
 - RSS is served per watch and as one global feed.
-- Open question: whether `cosmetic` changes should alert at all. They do today; skipping them would cut noise but trusts the LLM's label.
 
-Remaining in Phase 1 — **this is where new work goes**:
+### Next up — this is where new work goes
 
-- **CORS only allows `GET`/`POST`/`OPTIONS`** (`corsOptions.methods` in `index.js`). A browser on another origin cannot call `PATCH`/`DELETE /watches/:id` or `PUT`/`DELETE` feedback. The current chat UI never does, but step 7's UI will.
-- **Step 7, UI.** The frontend is **still the original chat demo** and has had no watchdog work at all — no watch list, no change timeline, no diff viewer, no feedback thumbs. Also needs honest failure messaging: many ToS pages sit behind logins or bot protection, and the system should say *why* a page can't be read rather than failing quietly.
+The owner's approach: small, testable features first, and production tooling only after. Prefer free tiers of production-grade services; nothing that costs money without asking.
 
-The `users` table and snapshot retention/size caps are also unbuilt. Accounts are Phase 2 — there is a single implicit owner for now, and no `users` table.
+**1. Real-page trial (start now; it runs for days or weeks).** This is how PLAN.md's "done when" criteria get measured:
+- a real change produces a correct, quoted alert within one interval;
+- fewer than 1 in 3 alerts are noise;
+- a page unchanged for 30 days produces zero alerts.
+
+Steps:
+- Pick 15–20 real ToS/pricing pages. Mix big SaaS, streaming and telecom, and include a few known to sit behind logins or bot protection.
+- Add them as watches with `alertChannels: ['email', 'rss']`, and run the backend with `EMAIL_TRANSPORT=ethereal` and a **throwaway** `LINK_TOKEN`.
+- Rate every change `useful` or `noise` through the feedback API, because the noise ratio is computed from those ratings.
+- Log findings per page in `docs/TRIAL.md`, which doesn't exist yet; create it when the trial starts. Record whether the page was readable, why not if not, each noise alert and its cause, and whether the summary was right.
+- The first task is a small script that adds the trial watches. It must use the API, so every URL goes through `validateScrapeUrl` and the guarded scraper. Never bypass `ssrf.js`.
+- Real scraping needs `npm exec playwright install chromium` once.
+
+**2. Step 7, UI, in small PRs, in parallel with the trial:**
+1. **CORS:** add `PATCH`, `PUT` and `DELETE` to `corsOptions.methods` in `index.js`. Today only `GET`/`POST`/`OPTIONS` are allowed, so a browser can't pause, delete or rate anything.
+2. **Watch list** plus an "add a page" form with frequency, selector and alert channels.
+3. **Per-watch change timeline:** summary, the changed text, before/after, and `useful`/`noise` buttons. **Design constraint:** the evidence page and `/evidence/files` need `LINK_TOKEN`, and CRA inlines `REACT_APP_*` into the public bundle, so the frontend must **not** carry that token. Render evidence from the watches API instead. Screenshots need a route the frontend can use without the token.
+4. **Honest failure messages:** say *why* a page can't be read (login wall, bot protection, timeout, blocked address). The mapping belongs in `sendScrapeError` and in what `runCheck` stores in `watches.last_error`.
+5. Retire the chat demo's disposable watch touchpoint (`useWatchCheck`, `ChangeExplanation`) once the timeline replaces it.
+
+**3. Tune from the trial findings:**
+- Extend `NOISE_PATTERNS` in `diff.js` and the explainer prompt.
+- Turn every real noise case into a unit-test fixture, so a fix can't silently regress.
+
+**4. Open decisions (the owner's):**
+- Should `cosmetic` changes alert at all? They do today. Skipping them would cut noise but trusts the LLM's label.
+- Hosting target (PLAN.md §7).
+
+**5. Before anyone else uses it (Phase 2 prep):**
+- free-tier hosting with HTTPS, and a free-tier SMTP provider;
+- database and evidence backups, plus snapshot retention and size caps (unbuilt);
+- the `users` table and accounts. There's a single implicit owner today.
+- Respecting robots.txt and polite intervals (PLAN.md risk 3) is also unbuilt.
 
 ## Commands
 
@@ -63,7 +105,7 @@ docker-compose up --build
 ```
 
 ### CI
-`.github/workflows/ci.yml` runs two jobs on push to `main`/`master`/`dev` and on PRs: **backend** (`npm test`) and **frontend** (`lint` + `test:ci` + `build` with `CI=true`, so warnings fail the build). The python job is gone along with the Python services. Concurrency is grouped per ref with `cancel-in-progress`.
+`.github/workflows/ci.yml` runs two jobs on PRs and on pushes to `main`/`master`/`dev`. `main` and `dev` no longer exist on the remote, so in practice that means `master` and PRs. The jobs are **backend** (`npm test`) and **frontend** (`lint` + `test:ci` + `build` with `CI=true`, so warnings fail the build). The python job is gone along with the Python services. Concurrency is grouped per ref with `cancel-in-progress`.
 
 ## Architecture
 
@@ -73,8 +115,11 @@ docker-compose up --build
 React (:3000)
   └── REACT_APP_API_BASE → Express (:5000) ──┬── Playwright chromium → guard proxy (127.0.0.1, random port)
                                               ├── Groq API (all LLM calls)
-                                              └── SQLite (better-sqlite3, DB_PATH)
-                                             + scheduler (setInterval heartbeat, state in SQLite)
+                                              ├── SQLite (better-sqlite3, DB_PATH) + evidence/ screenshots beside it
+                                              └── SMTP server (nodemailer; Ethereal in development)
+                                             + scheduler and email sender (setInterval heartbeats, state in SQLite)
+
+Feed readers and email clients ──→ /feed.xml, /watches/:id/feed.xml, /evidence/...   (?token=LINK_TOKEN)
 ```
 
 The Flask RL service and the FastAPI/ChromaDB version service were **deleted** (commit `5121ef9`); `backend/chroma_service/` no longer exists. Don't reintroduce either. Version history, thumbs-up/down feedback and change records all belong in SQLite.
@@ -83,23 +128,29 @@ The Flask RL service and the FastAPI/ChromaDB version service were **deleted** (
 
 `backend/watches.js` → `runCheck(watchId)` is the core, and both the scheduler and `POST /watches/:id/check` call it:
 
-1. Fetch via `scraper.captureSnapshot` (guarded browser, optional CSS selector, full-page screenshot).
-2. SHA-256 the extracted text. **If the hash matches the latest snapshot, stop** — no row is written.
-3. Otherwise insert a `snapshots` row.
-4. If a previous snapshot existed, run `computeDiff`; insert a `changes` row only when `hasMeaningfulChange`, with its `diff_hash` (`hashChanges` in `diff.js`, no LLM).
+1. Fetch via `scraper.captureSnapshot`: a guarded browser, an optional CSS selector and a full-page screenshot.
+2. SHA-256 the extracted text. **If the hash matches the latest snapshot, stop.** No row is written.
+3. Copy the screenshot into evidence storage (`preserveScreenshot`).
+4. **In one transaction:**
+   - insert the `snapshots` row;
+   - if a previous snapshot existed, run `computeDiff`;
+   - when `hasMeaningfulChange`, insert a `changes` row with its `diff_hash` (`hashChanges` in `diff.js`, no LLM), then `queueAlerts` one alert per enabled channel.
 
-`runCheck` holds an in-memory per-watch lock: a second check of the same watch while one runs throws `CheckInProgressError` (manual `/check` → 409, scheduler → skipped). Without it, overlapping checks diff against the same old snapshot and record the change twice.
+   If the transaction fails, the evidence copy is discarded.
+5. After commit, explain the change with the LLM (`explainStoredChange`), which writes the result onto the `changes` row.
 
-5. Explain the change with the LLM (`explainStoredChange`), writing the result onto the `changes` row.
+Delivery happens outside `runCheck`. RSS alerts are published the moment they are inserted, and `emailAlerts.js` sends `pending` email alerts on its own heartbeat.
 
-So `snapshots` rows mean "content changed"; `changes` rows mean "changed in a way that survived noise filtering". The explainer runs only at step 5, after the diff has proved a change — never before.
+`runCheck` holds an in-memory per-watch lock. A second check of the same watch while one runs throws `CheckInProgressError`: manual `/check` answers 409, and the scheduler skips it. Without the lock, overlapping checks diff against the same old snapshot and record the change twice.
+
+So `snapshots` rows mean "content changed", and `changes` rows mean "changed in a way that survived noise filtering". The explainer runs only at step 5, after the diff has proved a change, never before.
 
 Text extraction prefers the watch's `selector`, falls back to `<main>`, then `document.body` (`backend/scraper.js`).
 
 ### Diff engine (`backend/diff.js`)
 Paragraph-level LCS, then noise filtering — no LLM, by design. Paragraphs split on blank lines, whitespace collapsed so rewrapping isn't a change. `NOISE_PATTERNS` drops timestamps, `© <year>` footers, "last updated" lines, live counters and loading text. Returns `{ changes, hasMeaningfulChange }` with unchanged paragraphs dropped.
 
-Per the plan this is **not yet tuned against a real corpus** (20–30 actual ToS/pricing pages) — only synthetic unit tests. Noise filtering is explicitly called "the product", so tuning it against real pages is high-value work.
+Per the plan this is **not yet tuned against a real corpus** (20–30 actual ToS/pricing pages); it has only synthetic unit tests. Noise filtering is explicitly called "the product", so this is what the real-page trial in "Next up" exists to fix.
 
 ### Explainer (`backend/explainer.js`)
 The LLM half of the principle. Runs only on a diff the engine already proved, and classifies into `price | fees | cancellation | data_use | cosmetic`.
@@ -143,12 +194,12 @@ Watch creation runs `validateScrapeUrl` up front and stores the normalized URL, 
 
 ### Express backend (`backend/index.js`)
 - **`/ask` is the router** (legacy demo surface, still live). `classifyIntentHeuristic` runs regex first and only falls back to a Groq classification call when it returns `'chat'`, avoiding an extra LLM round-trip. Intents are exactly `spin | chat | review | summarize`; each maps to a `handleX` that is also its own endpoint. The response carries `_routed_to` so the frontend knows which field (`spun`/`reply`/`reviewed`/`summary`) to read. Adding an intent means touching the heuristic, the classifier prompt, `routeToHandler`, and the frontend's route→field map.
-- **Abuse protection**, all env-tunable (see `.env.example`): a global `apiLimiter` plus a tighter `scrapeLimiter`, a JSON body limit, `MAX_CONCURRENT_SCRAPES` rejecting over-cap scrapes with 503 + `Retry-After`, and `cleanupScreenshots` on an interval (`.unref()`'d) expiring files past `SCREENSHOT_TTL_MS`. Note screenshots are **transient by design** — alerts linking to screenshots (step 6) will need a retention policy that outlives this TTL.
+- **Abuse protection**, all env-tunable (see `.env.example`): a global `apiLimiter` plus a tighter `scrapeLimiter`, a JSON body limit, `MAX_CONCURRENT_SCRAPES` rejecting over-cap scrapes with 503 + `Retry-After`, and `cleanupScreenshots` on an interval (`.unref()`'d) expiring files past `SCREENSHOT_TTL_MS`. That cleanup only touches the transient `backend/screenshots`. Screenshots a snapshot needs live in evidence storage (see below), and `sweepEvidence` runs on the same interval.
 - `sendScrapeError` is shared between `/scrape` and the watches pipeline so both report failures consistently. Extend it rather than duplicating error mapping — step 7's honest failure messaging belongs here.
 - `sanitizeHistory` bounds and validates chat history before it reaches the model; `clampTextForModel` caps content per call (12000 chars, 8000 for chat context) and reports `truncated`.
 - CORS is an explicit allowlist from `CORS_ALLOWED_ORIGINS`; no-`Origin` requests are allowed for health checks/curl. No wildcard path exists.
 - `app` is exported and `listen` is guarded by `require.main === module` so tests import without binding a port. The `module.exports` block also re-exports internals purely for unit tests, including `callGroq`, `routeToHandler` and every handler.
-- A graceful `SIGINT`/`SIGTERM` shutdown stops the scheduler, closes the browser and guard proxy, then closes the DB.
+- A graceful `SIGINT`/`SIGTERM` shutdown stops the scheduler and the email sender, closes the browser and guard proxy, then closes the DB.
 
 ### Alerts and feedback (`backend/alerts.js`)
 Each watch has two on/off flags, `alert_rss` (default on: it needs no setup and sends nothing) and `alert_email` (default off). The API exposes them as `alertChannels: ['email', 'rss']`.
@@ -230,6 +281,12 @@ Messages are tagged with a `type` field (`MESSAGE_TYPES` in `src/utils/messages.
 
 ## Environment
 
-Backend reads `backend/.env` (gitignored; copy `backend/.env.example`). `GROQ_API_KEY` is required or every LLM endpoint fails. `DB_PATH` must be `/data/watchdog.db` under Compose so the volume persists it. Frontend overrides of `REACT_APP_API_BASE` are **inlined by CRA at build time**, so Docker images need them at build, not run.
+Backend reads `backend/.env` (gitignored; copy `backend/.env.example`, which documents every variable). Compose passes the whole file in via `env_file`.
 
-`PROJECT_FULL_DOCUMENTATION.md` is gitignored but present locally with detailed API/architecture notes.
+- `GROQ_API_KEY` is required, or every LLM endpoint fails. `EXPLAIN_ENABLED=false` lets detection run without it.
+- `LINK_TOKEN` turns on feeds and evidence pages. `PUBLIC_BASE_URL` is used to build their links.
+- `EMAIL_TRANSPORT` plus `SMTP_*`/`ALERT_EMAIL_*` turn on email. Without them, email alerts wait as `pending` and say what's missing.
+- `DB_PATH` must be `/data/watchdog.db` under Compose so the volume persists it. Evidence screenshots sit beside it, in `/data/evidence`.
+- Frontend overrides of `REACT_APP_API_BASE` are **inlined by CRA at build time**, so Docker images need them at build, not run. For the same reason, never put a secret in a `REACT_APP_*` variable.
+
+`PROJECT_FULL_DOCUMENTATION.md` is gitignored and local-only: a plain-language guide for the owner. It was rewritten on 2026-10-13; the pre-watchdog version was saved outside the repo as `../PROJECT_FULL_DOCUMENTATION.pre-watchdog.md`. The repo's own docs are authoritative: this file, README.md and docs/PLAN.md.

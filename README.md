@@ -1,16 +1,26 @@
 # AI-Assisted-scraper
 
 ## Project Overview
-AI-Assisted-scraper is moving from a scrape-and-rewrite demo toward a watchdog for ToS/pricing pages: add a URL, it is checked on a schedule, and meaningful changes raise a quoted, plain-language alert. See [docs/PLAN.md](docs/PLAN.md) for the full product plan. It features a React frontend and a Node.js/Express backend (scraping, AI integration, watches API) backed by SQLite.
+AI-Assisted-scraper is a watchdog for subscription, pricing and terms-of-service pages. You add a URL. The page is checked on a schedule, and when something meaningful changes you get a short, plain-language alert by email or RSS. The alert quotes the changed text and links to a before/after view, so you can check the claim yourself.
+
+Changes are found by a plain text comparison. The AI (Groq) only classifies and explains a change that comparison has already proved, and it can only cite text from the change itself. See [docs/PLAN.md](docs/PLAN.md) for the product plan.
+
+It has a React frontend and a Node.js/Express backend, backed by SQLite.
+
+## Status
+- **Backend watchdog: complete for a single user.** It covers watches, scheduled checks, change detection with noise filtering, AI explanations, email and RSS alerts, before/after evidence pages, and useful/noise feedback.
+- **Frontend: still the original scrape-and-chat demo.** Watch-centric screens are the next step (Phase 1 step 7). Until then, watches are managed through the API below.
+- **Next:** a trial on real pricing and terms pages, to tune the noise filter and the AI explanations against real pages instead of test content.
 
 ## Capabilities
-- Scrape web pages and extract main content and screenshots
-- Rewrite and simplify content using Groq AI
-- Contextual chat with the scraped content
-- Watches API: create, list, pause and delete URL watches, stored in SQLite
-- Snapshot pipeline: hash-gated snapshots of a watched page's content
-- Change explanations: plain-language summaries with quoted evidence from the page
-- Deterministic paragraph-level diff engine (no LLM) between snapshots
+- Watches: add, list, pause and delete URLs to watch, checked daily or weekly
+- Change detection: a paragraph-level comparison with no AI, which ignores noise such as timestamps, counters and copyright years
+- Explanations: one plain-language sentence per change, classified as price, fees, cancellation, data use or cosmetic, and grounded in the changed text
+- Alerts by email, RSS, or both, chosen per watch, with repeat alerts suppressed
+- An evidence page per change: the exact changed text, and the before and after versions with screenshots
+- Feedback: mark each change useful or noise
+- A hardened scraper: all browsing goes through a filtering proxy that blocks private and internal addresses, including via redirects
+- The original demo: scrape a page, rewrite it with AI, and chat about it
 
 ---
 
@@ -45,18 +55,15 @@ npm start
 ```bash
 cd backend
 npm install
+npm exec playwright install chromium   # once, before the first scrape
+cp .env.example .env                   # then set GROQ_API_KEY
 npm start
 ```
-- Runs on [http://localhost:5000](http://localhost:5000)
-- Create `.env` file with:
-  ```
-  GROQ_API_KEY=your_groq_api_key
-  CORS_ALLOWED_ORIGINS=http://localhost:3000
-  # Optional
-  GROQ_MODEL=openai/gpt-oss-20b
-  HTTP_TIMEOUT_MS=20000
-  DB_PATH=./data/watchdog.db
-  ```
+- Runs on [http://localhost:5000](http://localhost:5000). It also starts the scheduler and the email sender.
+- `backend/.env.example` documents every setting. The ones to know first:
+  - `GROQ_API_KEY`: required for AI features. Set `EXPLAIN_ENABLED=false` to detect changes without it.
+  - `LINK_TOKEN`: turns on RSS feeds and evidence pages.
+  - `EMAIL_TRANSPORT=ethereal`: try email alerts in a throwaway test inbox, with no signup.
 
 ---
 
@@ -73,6 +80,9 @@ Tests include:
 - Request validation, body-size limits and rate limiting
 - CORS origin parsing
 - Watches API, snapshot pipeline, diff engine, scheduler and explainer
+- Alerts and dedup, RSS feeds, email delivery and retries, evidence storage and the evidence page
+
+All backend tests run offline: the browser, the AI model and the email server are replaced with test stand-ins.
 
 ### Run Frontend Tests
 ```bash
@@ -81,7 +91,7 @@ npm run test:ci
 ```
 Unit tests for the API client, hooks and utilities, plus an integration test that drives the scrape → write → chat flow with the network mocked.
 
-CI (`.github/workflows/ci.yml`) runs both suites plus lint and a production frontend build.
+CI (`.github/workflows/ci.yml`) runs both suites, plus lint and a production frontend build, on every pull request and on pushes to `master`.
 
 ### Dependency files
 - `package.json` (repo root): the React frontend.
@@ -184,8 +194,9 @@ See `backend/.env.example` for a ready-to-copy template.
 - **Chrome Binary**: First run may require `npm exec playwright install chromium` in backend folder
 - **Security**: The scraper's browser only reaches the network through a local egress-filtering proxy that resolves each hostname, refuses private/loopback/link-local/reserved addresses (including via redirects, iframes and subresources), and connects to the vetted IP itself (no DNS-rebinding window). Non-http schemes and embedded credentials are rejected up front. Still deploy the backend without access to internal networks or cloud metadata endpoints as defence in depth.
 - **CORS**: Backend requires explicit origin allowlist; wildcard origins are blocked
-- **Data Persistence**: SQLite database is persisted via the `watchdog_data` volume in Docker Compose
+- **Data Persistence**: The SQLite database and the evidence screenshots are kept on the `watchdog_data` volume in Docker Compose
+- **Public links**: Feeds and evidence pages carry `LINK_TOKEN` in their URL, so treat those links like a password. In deployment they are the only URLs that need to be publicly reachable
 
 ---
 
-For detailed architecture and API documentation, see [PROJECT_FULL_DOCUMENTATION.md](PROJECT_FULL_DOCUMENTATION.md).
+For the product plan and roadmap, see [docs/PLAN.md](docs/PLAN.md). For a detailed architecture walkthrough, see [CLAUDE.md](CLAUDE.md).
