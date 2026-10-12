@@ -5,6 +5,7 @@ const scraper = require('./scraper');
 const { computeDiff, hashChanges } = require('./diff');
 const { explainChange } = require('./explainer');
 const { enabledChannels, parseChannels, queueAlerts, serializeAlert } = require('./alerts');
+const { preserveScreenshot, discardEvidence } = require('./evidence');
 
 const router = express.Router();
 
@@ -328,13 +329,17 @@ async function checkWatchNow(watchId) {
   const now = Date.now();
   const diffResult = latest ? computeDiff(latest.content, captured.content) : null;
 
+  // Kept before the snapshot row that refers to it is written, and discarded
+  // again if that write fails.
+  const screenshotPath = preserveScreenshot(captured.screenshotPath, scraper.SCREENSHOT_DIR);
+
   // Snapshot, change and alerts are written together or not at all. If only
   // the snapshot landed, the next check would see identical content and stop
   // early, so the change and its alerts would be lost for good.
-  const { snapshotId, change } = db.transaction(() => {
+  const writeAll = db.transaction(() => {
     const snapshotId = db
       .prepare('INSERT INTO snapshots (watch_id, content, content_hash, screenshot_path, created_at) VALUES (?, ?, ?, ?, ?)')
-      .run(watchId, captured.content, contentHash, captured.screenshotPath, now)
+      .run(watchId, captured.content, contentHash, screenshotPath, now)
       .lastInsertRowid;
 
     if (!diffResult || !diffResult.hasMeaningfulChange) return { snapshotId, change: null };
@@ -350,7 +355,16 @@ async function checkWatchNow(watchId) {
     queueAlerts(db, { watch: current, changeId, diffHash, now });
 
     return { snapshotId, change: { id: changeId, changes: diffResult.changes } };
-  })();
+  });
+
+  let written;
+  try {
+    written = writeAll();
+  } catch (err) {
+    discardEvidence(screenshotPath);
+    throw err;
+  }
+  const { snapshotId, change } = written;
 
   if (change) {
     const explanation = await explainStoredChange(change.id, change.changes);

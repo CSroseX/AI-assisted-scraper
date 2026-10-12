@@ -148,7 +148,8 @@ Active watches are checked on their `frequency` (daily or weekly) by a scheduler
 - `RATE_LIMIT_WINDOW_MS` / `RATE_LIMIT_MAX`: General per-IP rate limit (default: 60 requests per 60s)
 - `SCRAPE_RATE_LIMIT_MAX`: Per-IP limit for `/scrape` per window (default: 10)
 - `MAX_CONCURRENT_SCRAPES`: Simultaneous browser scrapes before returning 503 (default: 3)
-- `SCREENSHOT_TTL_MS`: How long screenshots are kept before cleanup (default: 3600000)
+- `SCREENSHOT_TTL_MS`: How long transient scrape screenshots are kept before cleanup (default: 3600000). Screenshots that back a watch snapshot are kept as evidence for as long as the snapshot exists.
+- `EVIDENCE_DIR`: Where those evidence screenshots are stored (default: an `evidence` folder next to `DB_PATH`, so on the Docker volume)
 - `TRUST_PROXY`: Set (e.g. `1`) when running behind a reverse proxy so rate limits use the real client IP
 - `SCHEDULER_ENABLED`: Set to `false` to run the API without recurring checks (default: enabled)
 - `SCHEDULER_TICK_MS`: How often the scheduler asks the database what is due (default: 60000)

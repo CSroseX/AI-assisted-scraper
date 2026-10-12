@@ -16,8 +16,7 @@ Built: RL/Chroma cleanup, SQLite storage + watches API, snapshot pipeline, diff 
 
 Remaining in Phase 1 — **this is where new work goes**:
 
-- **Step 6, Alerts — storage done, delivery not.** Decided: users choose email, RSS or both per watch. Email goes through nodemailer, configured by env vars, with a test inbox (Ethereal/Mailtrap) during development and a free-tier delivery service later. Email goes to one app-wide address held in settings until accounts exist. RSS is served both per watch and as one global feed. Built: the `alerts` and `feedback` tables, per-watch channel flags, alert queueing, the feedback API, and RSS feeds (see "Alerts and feedback" and "RSS feeds" below). **Still to build:** email sending, which picks up `pending` email alerts, and links from each alert to before/after snapshots and screenshots so a user can verify the claim. Those links are blocked by the next point.
-- **Watch screenshots are deleted after an hour.** `cleanupScreenshots` in `index.js` deletes every `.png` in `SCREENSHOT_DIR` older than `SCREENSHOT_TTL_MS`, including those that `snapshots.screenshot_path` still references. Every stored watch screenshot is therefore a dead link after an hour. Fix this before alerts link to screenshots.
+- **Step 6, Alerts — storage done, delivery not.** Decided: users choose email, RSS or both per watch. Email goes through nodemailer, configured by env vars, with a test inbox (Ethereal/Mailtrap) during development and a free-tier delivery service later. Email goes to one app-wide address held in settings until accounts exist. RSS is served both per watch and as one global feed. Built: the `alerts` and `feedback` tables, per-watch channel flags, alert queueing, the feedback API, and RSS feeds (see "Alerts and feedback" and "RSS feeds" below). **Still to build:** email sending, which picks up `pending` email alerts, and links from each alert to before/after snapshots and screenshots so a user can verify the claim. Screenshots are now durable (see "Evidence storage" below), so those links can be built.
 - **CORS only allows `GET`/`POST`/`OPTIONS`** (`corsOptions.methods` in `index.js`). A browser on another origin cannot call `PATCH`/`DELETE /watches/:id` or `PUT`/`DELETE` feedback. The current chat UI never does, but step 7's UI will.
 - **Step 7, UI.** The frontend is **still the original chat demo** and has had no watchdog work at all — no watch list, no change timeline, no diff viewer, no feedback thumbs. Also needs honest failure messaging: many ToS pages sit behind logins or bot protection, and the system should say *why* a page can't be read rather than failing quietly.
 
@@ -41,7 +40,7 @@ cd backend
 npm install
 npm start                                  # :5000, starts the scheduler too
 npm run dev                                # nodemon
-npm test                                   # node:test runner (no jest/mocha); 142 tests
+npm test                                   # node:test runner (no jest/mocha); 153 tests
 node --test ssrf.test.js                   # single file
 node --test --test-name-pattern "isPrivateIPv4" ssrf.test.js   # single test
 npm exec playwright install chromium       # required once before scraping works
@@ -155,6 +154,15 @@ Dedup has two layers:
 - **Soft:** a repeat of the same `diff_hash` on the same watch and channel within `ALERT_REPEAT_WINDOW_MS` (default 7 days) is stored as `suppressed` instead of `pending`. This stops a page that flips between two versions from alerting every check. Only non-suppressed rows open a window, so a flapping page re-alerts once per window, and a change that genuinely recurs later isn't lost. The check-then-insert is race-free because it runs inside the transaction and under `runCheck`'s per-watch lock.
 
 Alert statuses are `pending | sent | failed | suppressed`, and there are `attempts`/`last_error`/`sent_at` columns ready for email delivery. **An RSS alert is stored as `sent` immediately**, because RSS has no delivery step: being in the feed is being delivered. Email alerts start as `pending`. `feedback` holds one `useful | noise` vote per change (`change_id` UNIQUE, upserted), and it rates the *change*, not the alert. The "fewer than 1 in 3 alerts marked noise" goal in PLAN.md is measured from it.
+
+### Evidence storage (`backend/evidence.js`)
+The scraper writes every screenshot to `SCREENSHOT_DIR` (`backend/screenshots`). That folder is **transient**: `cleanupScreenshots` deletes files past `SCREENSHOT_TTL_MS`, and it sits outside the Docker volume. When `runCheck` stores a snapshot, `preserveScreenshot` **copies** its screenshot to `EVIDENCE_DIR`, which defaults to `evidence/` next to `DB_PATH`, so `/data/evidence` on the volume under Compose. It copies rather than renames because the two folders can be on different filesystems. `snapshots.screenshot_path` then holds `evidence/<uuid>.png`.
+
+- The copy happens just before the write transaction. If the transaction fails, `discardEvidence` removes the copy.
+- A missing screenshot never fails a check; the snapshot is stored without one.
+- Paths are matched against strict `screenshots/<uuid>.png` / `evidence/<uuid>.png` patterns, which rules out path traversal. Use `evidenceFile()` to resolve a stored path; never join one yourself.
+- `sweepEvidence` runs with the transient cleanup and deletes evidence no snapshot references, such as a deleted watch's screenshots, once it's older than an hour. The grace period protects a copy whose snapshot is about to be committed.
+- At startup, `adoptLegacyScreenshots` moves screenshots of older snapshots out of the transient folder if they still exist, and clears the path if they don't. It runs before the first cleanup, which would otherwise delete them.
 
 ### RSS feeds (`backend/feeds.js`)
 `GET /feed.xml` (every watch) and `GET /watches/:id/feed.xml` (one watch), mounted at the app root. Each feed renders the latest 50 `sent` RSS alerts as RSS 2.0 on every request. The change's summary is read at render time, so an explanation that lands after the alert still appears. The item `guid` is `watchdog-alert-<alertId>`, which stays stable so a reader never shows an item twice.

@@ -459,6 +459,55 @@ test('if alerts cannot be queued, the snapshot and change roll back and the next
   assert.equal((await (await get(`/watches/${created.id}/alerts`)).json()).length, 1);
 });
 
+// A screenshot file as the real scraper would leave it.
+function transientScreenshot(t) {
+  const name = `${require('crypto').randomUUID()}.png`;
+  fs.mkdirSync(scraper.SCREENSHOT_DIR, { recursive: true });
+  fs.writeFileSync(path.join(scraper.SCREENSHOT_DIR, name), 'png-bytes');
+  t.after(() => fs.rmSync(path.join(scraper.SCREENSHOT_DIR, name), { force: true }));
+  return `screenshots/${name}`;
+}
+
+test('a stored snapshot keeps its screenshot as evidence, beyond the transient cleanup', async (t) => {
+  const { evidenceFile } = require('./evidence');
+  explainerOff(t);
+  t.mock.method(scraper, 'validateScrapeUrl', async (url) => ({ ok: true, parsedUrl: url }));
+  const created = await (await post('/watches', { url: 'https://evidence.test', frequency: 'daily' })).json();
+
+  const shot = transientScreenshot(t);
+  t.mock.method(scraper, 'captureSnapshot', async () => ({ content: 'Price: $10/month.', screenshotPath: shot }));
+  await post(`/watches/${created.id}/check`);
+
+  const [snapshot] = await (await get(`/watches/${created.id}/snapshots`)).json();
+  assert.match(snapshot.screenshotPath, /^evidence\/[0-9a-f-]+\.png$/);
+  // The transient copy expiring must not take the evidence with it.
+  fs.rmSync(path.join(scraper.SCREENSHOT_DIR, path.basename(shot)));
+  assert.equal(fs.readFileSync(evidenceFile(snapshot.screenshotPath), 'utf8'), 'png-bytes');
+
+  // A repeat check of unchanged content stores nothing, so keeps nothing.
+  const repeatShot = transientScreenshot(t);
+  t.mock.method(scraper, 'captureSnapshot', async () => ({ content: 'Price: $10/month.', screenshotPath: repeatShot }));
+  await post(`/watches/${created.id}/check`);
+  assert.equal(fs.existsSync(evidenceFile(`evidence/${path.basename(repeatShot)}`)), false);
+});
+
+test('when the snapshot write fails, its kept screenshot is discarded too', async (t) => {
+  const { evidenceFile } = require('./evidence');
+  explainerOff(t);
+  t.mock.method(scraper, 'validateScrapeUrl', async (url) => ({ ok: true, parsedUrl: url }));
+  const created = await (await post('/watches', { url: 'https://evidence-rollback.test', frequency: 'daily' })).json();
+  t.mock.method(scraper, 'captureSnapshot', async () => ({ content: 'Fee: $1.', screenshotPath: null }));
+  await post(`/watches/${created.id}/check`);
+
+  getDb().exec("CREATE TRIGGER fail_alerts_ev BEFORE INSERT ON alerts BEGIN SELECT RAISE(ABORT, 'disk full'); END;");
+  t.after(() => getDb().exec('DROP TRIGGER IF EXISTS fail_alerts_ev'));
+
+  const shot = transientScreenshot(t);
+  t.mock.method(scraper, 'captureSnapshot', async () => ({ content: 'Fee: $2.', screenshotPath: shot }));
+  assert.equal((await post(`/watches/${created.id}/check`)).status, 502);
+  assert.equal(fs.existsSync(evidenceFile(`evidence/${path.basename(shot)}`)), false, 'no orphaned evidence');
+});
+
 test('feedback: rate a change, change your mind, then clear it', async (t) => {
   const { watch, change } = await watchWithOneChange(t, 'https://feedback.test');
   const route = `/watches/${watch.id}/changes/${change.id}/feedback`;
