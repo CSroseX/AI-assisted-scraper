@@ -8,6 +8,7 @@ process.env.JSON_BODY_LIMIT = '5kb';
 process.env.RATE_LIMIT_MAX = '1000';
 process.env.SCRAPE_RATE_LIMIT_MAX = '2';
 process.env.GROQ_API_KEY = 'test-key';
+process.env.CORS_ALLOWED_ORIGINS = 'http://localhost:3000';
 
 const { app, cleanupScreenshots, sanitizeHistory } = require('./index');
 
@@ -55,6 +56,28 @@ test('/scrape rejects private targets and is rate limited', async () => {
   assert.equal(second.status, 400);
   const third = await post('/scrape', { url: 'http://localhost' });
   assert.equal(third.status, 429);
+});
+
+const preflight = (origin, method) => fetch(`${base}/watches/1`, {
+  method: 'OPTIONS',
+  headers: { Origin: origin, 'Access-Control-Request-Method': method }
+});
+
+test('CORS preflight allows PATCH, PUT and DELETE from an allowed origin', async () => {
+  for (const method of ['PATCH', 'PUT', 'DELETE']) {
+    const res = await preflight('http://localhost:3000', method);
+    assert.equal(res.status, 204);
+    assert.equal(res.headers.get('access-control-allow-origin'), 'http://localhost:3000');
+    assert.ok(res.headers.get('access-control-allow-methods').split(',').includes(method));
+  }
+});
+
+test('CORS preflight refuses a disallowed origin', async () => {
+  for (const method of ['PATCH', 'PUT', 'DELETE']) {
+    const res = await preflight('https://evil.example', method);
+    assert.equal(res.status, 403);
+    assert.equal(res.headers.get('access-control-allow-origin'), null);
+  }
 });
 
 test('/health is reachable', async () => {
