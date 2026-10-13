@@ -5,7 +5,8 @@
   padding: 20px 0 0 0;
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  /* The app nav sits above the chat view. */
+  height: calc(100vh - var(--app-nav-height, 0px));
 }
 .sidebar h2 {
   margin: 0 0 20px 24px;
