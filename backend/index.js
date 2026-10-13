@@ -8,11 +8,9 @@ const path = require('path');
 const fs = require('fs');
 const rateLimit = require('express-rate-limit');
 const { isPrivateIPv4, isPrivateIPv6 } = require('./ssrf');
-const { SCREENSHOT_DIR, validateScrapeUrl, captureSnapshot, scraperBusy, closeScraper } = require('./scraper');
+const { SCREENSHOT_DIR, validateScrapeUrl, closeScraper } = require('./scraper');
 const { closeDb } = require('./db');
-const { failureResponse } = require('./failures');
 const { sweepEvidence, adoptLegacyScreenshots } = require('./evidence');
-const { callGroq, withRetries, clampTextForModel } = require('./groq');
 const watchesRouter = require('./watches');
 const feedsRouter = require('./feeds');
 const evidencePageRouter = require('./evidencePage');
@@ -65,7 +63,6 @@ const apiLimiter = rateLimit({
   limit: Number(process.env.RATE_LIMIT_MAX || 60),
   skip: (req) => req.path === '/health'
 });
-// Scraping launches a browser page, so it gets a much tighter budget.
 const scrapeLimiter = rateLimit({
   ...limiterDefaults,
   limit: Number(process.env.SCRAPE_RATE_LIMIT_MAX || 10)
@@ -73,11 +70,6 @@ const scrapeLimiter = rateLimit({
 app.use(apiLimiter);
 
 const SCREENSHOT_TTL_MS = Number(process.env.SCREENSHOT_TTL_MS || 60 * 60 * 1000);
-// The frontend shows these in an <img> from another origin, which helmet's same-origin CORP would block.
-app.use('/screenshots', (_req, res, next) => {
-  res.set('Cross-Origin-Resource-Policy', 'cross-origin');
-  next();
-}, express.static(SCREENSHOT_DIR));
 
 // Screenshots here are transient: delete anything older than the TTL. Those a
 // watch snapshot needs were already copied to evidence storage (evidence.js).
@@ -99,255 +91,9 @@ function cleanupScreenshots(now = Date.now()) {
   }
 }
 
-// Maps scraper/browser failures to safe client responses, with the same
-// reasons and plain messages (failures.js) as the watches pipeline.
-function sendScrapeError(res, err, label = 'Scrape API') {
-  const { status, body } = failureResponse(err);
-  console.error(`${label} error (${body.reason}):`, String(err.message || err));
-  return res.status(status).json(body);
-}
-
-app.post('/scrape', scrapeLimiter, async (req, res) => {
-  const { url, includeScreenshot = true } = req.body || {};
-  if (!url || typeof url !== 'string') {
-    return res.status(400).json({ error: 'No URL provided' });
-  }
-
-  const urlCheck = await validateScrapeUrl(url);
-  if (!urlCheck.ok) {
-    return res.status(400).json({ error: urlCheck.reason });
-  }
-
-  if (scraperBusy()) {
-    res.set('Retry-After', '5');
-    return res.status(503).json({ error: 'Scraper is busy, please retry shortly.' });
-  }
-
-  try {
-    const result = await captureSnapshot(urlCheck.parsedUrl, { includeScreenshot });
-    res.json(result);
-  } catch (err) {
-    sendScrapeError(res, err);
-  }
-});
-
-function classifyIntentHeuristic(message = '') {
-  const text = String(message).toLowerCase();
-  if (!text.trim()) return 'chat';
-
-  // Keep broad "what is ... about" style questions in conversational chat.
-  if (/\bwhat(?:'s| is)\b.*\babout\b/.test(text)) return 'chat';
-
-  if (/summarize|summary|tldr|key points|overview/.test(text)) return 'summarize';
-  if (/review|grammar|quality|well written|critique/.test(text)) return 'review';
-  if (/rewrite|rephrase|simplify|paraphrase|change tone|spin/.test(text)) return 'spin';
-  return 'chat';
-}
-
-// Extracted handler: spin content
-async function handleSpin(content, customPrompt = "Rewrite in modern English and simplify the tone.") {
-  const clamped = clampTextForModel(content, 12000);
-  const prompt = `${customPrompt}\n\n${clamped.text}`;
-  const spun = await callGroq([{ role: 'user', content: prompt }])
-  return { spun, metadata: { prompt: customPrompt, timestamp: Date.now(), truncated: clamped.truncated } };
-}
-
-// Extracted handler: review content
-async function handleReview(content) {
-  const clamped = clampTextForModel(content, 12000);
-  const reviewerPrompt = "You are an expert editor and reviewer. Refine and critique the following text for clarity, coherence, and style. Suggest improvements and rewrite as needed.\n\n" + clamped.text;
-  const reviewed = await callGroq([{ role: 'user', content: reviewerPrompt }]);
-  return { reviewed, metadata: { truncated: clamped.truncated } };
-}
-
-// Extracted handler: chat contextually
-async function handleChat(content, userMessage, history = []) {
-  const clampedContext = clampTextForModel(content, 8000);
-  const trimmedHistory = Array.isArray(history) ? history.slice(-8) : [];
-  const messages = [
-    { role: 'system', content: 'Context: ' + clampedContext.text }
-  ];
-  if (trimmedHistory.length) {
-    for (const msg of trimmedHistory) {
-      if (msg.role === 'user') {
-        messages.push({ role: 'user', content: msg.content });
-      } else if (msg.role === 'assistant') {
-        messages.push({ role: 'assistant', content: msg.content });
-      }
-    }
-  }
-  messages.push({ role: 'user', content: userMessage });
-
-  const reply = await callGroq(messages);
-  return { reply };
-}
-
-// NEW handler: summarize content
-async function handleSummarize(content) {
-  const clamped = clampTextForModel(content, 12000);
-  const summarizePrompt = "Summarize the following text concisely. Focus on key points and main ideas.\n\n" + clamped.text;
-  const summary = await callGroq([{ role: 'user', content: summarizePrompt }]);
-  return { summary, metadata: { truncated: clamped.truncated } };
-}
-
-// Intent classifier using Groq
-async function classifyIntent(message) {
-  // Prefer cheap local heuristics to avoid an extra LLM call per /ask request.
-  const heuristicIntent = classifyIntentHeuristic(message);
-  if (heuristicIntent !== 'chat') return heuristicIntent;
-
-  const prompt = `
-You are an intent classifier. Given a user message, classify it into EXACTLY one of these four categories:
-- spin     (rewrite, rephrase, simplify, paraphrase, change tone)
-- chat     (question, conversation, explanation, anything unclear)
-- review   (grammar check, quality assessment, is it well written)
-- summarize (summary, overview, key points, tldr)
-
-User message: "${message}"
-
-Respond with ONLY the single word label. No explanation. No punctuation.
-`.trim();
-
-  try {
-    const raw = await callGroq([{ role: 'user', content: prompt }])
-    const classified = raw?.trim()?.toLowerCase();
-    const valid = ['spin', 'chat', 'review', 'summarize'];
-    if (!valid.includes(classified)) {
-      console.warn(`[classifyIntent] Unexpected Groq output: "${classified}", falling back to chat`);
-      return 'chat';
-    }
-    return classified;
-  } catch (err) {
-    console.warn('[classifyIntent] Classification error, falling back to chat:', err.message);
-    return 'chat';
-  }
-}
-
-// Route to appropriate handler based on intent
-async function routeToHandler(intent, content, message, history = []) {
-  switch (intent) {
-    case 'spin':
-      return await handleSpin(content);
-    case 'review':
-      return await handleReview(content);
-    case 'summarize':
-      return await handleSummarize(content);
-    case 'chat':
-    default:
-      return await handleChat(content, message, history);
-  }
-}
-
-const MAX_TEXT_CHARS = 500000;
-
-function isNonEmptyString(value, max = MAX_TEXT_CHARS) {
-  return typeof value === 'string' && value.trim().length > 0 && value.length <= max;
-}
-
-// Keeps only well-formed chat turns from client-supplied history.
-function sanitizeHistory(history) {
-  if (!Array.isArray(history)) return [];
-  return history
-    .filter((m) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')
-    .map((m) => ({ role: m.role, content: m.content.slice(0, 8000) }))
-    .slice(-8);
-}
-
-// Never echo upstream error details to clients; log them instead.
-function sendAiError(res, err, label, extra = {}) {
-  console.error(`${label} error:`, err.message);
-  if (err.status === 429) {
-    return res.status(429).json({ error: 'The AI provider is rate limiting requests. Try again shortly.', ...extra });
-  }
-  return res.status(502).json({ error: 'The AI request failed. Please try again.', ...extra });
-}
-
-// The unified /ask endpoint
-app.post('/ask', async (req, res) => {
-  const { message, content, history = [] } = req.body || {};
-
-  if (!isNonEmptyString(content)) {
-    return res.status(400).json({ error: 'content is required' });
-  }
-  if (typeof message !== 'string' || message.length > 4000) {
-    return res.status(400).json({ error: 'message must be a string of at most 4000 characters' });
-  }
-
-  let intent = 'chat';
-  try {
-    intent = await classifyIntent(message);
-  } catch (err) {
-    console.warn('[/ask] Intent classification failed, falling back to chat:', err.message);
-  }
-
-  console.log(`[/ask] intent=${intent} content_chars=${String(content || '').length}`);
-
-  try {
-    const result = await routeToHandler(intent, content, message, sanitizeHistory(history));
-    console.log(`[/ask] routed_to=${intent} status=success`);
-    return res.json({ ...result, _routed_to: intent });
-  } catch (err) {
-    console.error(`[/ask] routed_to=${intent} status=error`);
-    return sendAiError(res, err, '[/ask] Handler', { _routed_to: intent });
-  }
-});
-
-app.post('/spin', async (req, res) => {
-  const { text, prompt = "Rewrite in modern English and simplify the tone." } = req.body || {};
-  if (!isNonEmptyString(text)) return res.status(400).json({ error: 'No text provided' });
-  if (typeof prompt !== 'string' || prompt.length > 2000) {
-    return res.status(400).json({ error: 'prompt must be a string of at most 2000 characters' });
-  }
-
-  try {
-    const result = await handleSpin(text, prompt);
-    res.json(result);
-  } catch (err) {
-    sendAiError(res, err, 'Spin API');
-  }
-});
-
-// Contextual chat endpoint for Groq
-app.post('/chat', async (req, res) => {
-  const { context, history, userMessage } = req.body || {};
-  if (!isNonEmptyString(context) || !isNonEmptyString(userMessage, 4000)) {
-    return res.status(400).json({ error: 'Missing context or user message' });
-  }
-
-  try {
-    const result = await handleChat(context, userMessage, sanitizeHistory(history));
-    res.json(result);
-  } catch (err) {
-    sendAiError(res, err, 'Chat API');
-  }
-});
-
-// AI Reviewer endpoint for Groq
-app.post('/review', async (req, res) => {
-  const { spunContent } = req.body || {};
-  if (!isNonEmptyString(spunContent)) return res.status(400).json({ error: 'No spun content provided' });
-
-  try {
-    const result = await handleReview(spunContent);
-    res.json(result);
-  } catch (err) {
-    sendAiError(res, err, 'Review API');
-  }
-});
-
-// Summarize endpoint for Groq
-app.post('/summarize', async (req, res) => {
-  const { content } = req.body || {};
-  if (!isNonEmptyString(content)) return res.status(400).json({ error: 'No content provided' });
-
-  try {
-    const result = await handleSummarize(content);
-    res.json(result);
-  } catch (err) {
-    sendAiError(res, err, 'Summarize API');
-  }
-});
-
+// A check launches a browser page, so it gets a much tighter budget than the
+// rest of the API.
+app.use('/watches/:id/check', scrapeLimiter);
 app.use('/watches', watchesRouter);
 app.use(feedsRouter);
 app.use(evidencePageRouter);
@@ -414,18 +160,5 @@ module.exports = {
   isPrivateIPv6,
   parseAllowedOrigins,
   cleanupScreenshots,
-  scheduler,
-  sanitizeHistory,
-  sendScrapeError,
-  // Exposed for unit tests
-  clampTextForModel,
-  withRetries,
-  callGroq,
-  classifyIntentHeuristic,
-  classifyIntent,
-  routeToHandler,
-  handleSpin,
-  handleReview,
-  handleChat,
-  handleSummarize
+  scheduler
 };

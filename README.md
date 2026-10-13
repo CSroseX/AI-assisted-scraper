@@ -9,7 +9,7 @@ It has a React frontend and a Node.js/Express backend, backed by SQLite.
 
 ## Status
 - **Backend watchdog: complete for a single user.** It covers watches, scheduled checks, change detection with noise filtering, AI explanations, email and RSS alerts, before/after evidence pages, and useful/noise feedback.
-- **Frontend: still the original scrape-and-chat demo.** Watch-centric screens are the next step (Phase 1 step 7). Until then, watches are managed through the API below.
+- **Frontend: the watched pages screen.** Add a page, check it now, pause, resume or delete it, see in plain words why a check failed, and open each page's change timeline to read and rate its changes.
 - **Next:** a trial on real pricing and terms pages, to tune the noise filter and the AI explanations against real pages instead of test content.
 
 ## Capabilities
@@ -20,7 +20,7 @@ It has a React frontend and a Node.js/Express backend, backed by SQLite.
 - An evidence page per change: the exact changed text, and the before and after versions with screenshots
 - Feedback: mark each change useful or noise
 - A hardened scraper: all browsing goes through a filtering proxy that blocks private and internal addresses, including via redirects
-- The original demo: scrape a page, rewrite it with AI, and chat about it
+- Honest failures: a login wall, bot check, error page or empty page is reported with its reason and never stored as the page
 
 ---
 
@@ -89,7 +89,7 @@ All backend tests run offline: the browser, the AI model and the email server ar
 npm run lint
 npm run test:ci
 ```
-Unit tests for the API client, hooks and utilities, plus an integration test that drives the scrape → write → chat flow with the network mocked.
+Tests for the API client, hooks and the watched pages screens, with the network mocked.
 
 CI (`.github/workflows/ci.yml`) runs both suites, plus lint and a production frontend build, on every pull request and on pushes to `master`.
 
@@ -161,7 +161,7 @@ Active watches are checked on their `frequency` (daily or weekly) by a scheduler
 - `HTTP_TIMEOUT_MS`: HTTP request timeout in ms (default: 20000)
 - `JSON_BODY_LIMIT`: Max JSON request body (default: `1mb`)
 - `RATE_LIMIT_WINDOW_MS` / `RATE_LIMIT_MAX`: General per-IP rate limit (default: 60 requests per 60s)
-- `SCRAPE_RATE_LIMIT_MAX`: Per-IP limit for `/scrape` per window (default: 10)
+- `SCRAPE_RATE_LIMIT_MAX`: Per-IP limit for `POST /watches/:id/check` per window, since each check launches a browser page (default: 10)
 - `MAX_CONCURRENT_SCRAPES`: Simultaneous browser scrapes before returning 503 (default: 3)
 - `SCREENSHOT_TTL_MS`: How long transient scrape screenshots are kept before cleanup (default: 3600000). Screenshots that back a watch snapshot are kept as evidence for as long as the snapshot exists.
 - `EVIDENCE_DIR`: Where those evidence screenshots are stored (default: an `evidence` folder next to `DB_PATH`, so on the Docker volume)

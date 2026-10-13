@@ -11,6 +11,7 @@ process.env.GROQ_API_KEY = 'test-key';
 // This file sends well over the default 60 requests a minute; rate limiting is
 // not what it tests.
 process.env.RATE_LIMIT_MAX = '10000';
+process.env.SCRAPE_RATE_LIMIT_MAX = '10000';
 
 const axios = require('axios');
 const scraper = require('./scraper');
