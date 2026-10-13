@@ -43,3 +43,29 @@ jobs:
       - run: npm run build
         env:
           CI: "true"
+
+  docker:
+    name: docker (compose)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cp backend/.env.example backend/.env
+      - run: docker compose build
+      - run: docker compose up --detach --wait --wait-timeout 180
+      - run: curl --fail --silent --show-error http://localhost:5000/health
+      - run: curl --fail --silent --show-error http://localhost:5000/watches
+      - name: The backend writes the database and evidence under /data as a non-root user
+        run: |
+          docker compose exec -T backend node -e "
+            const fs = require('fs');
+            if (process.getuid() === 0) throw new Error('the backend runs as root');
+            if (!fs.existsSync('/data/watchdog.db')) throw new Error('no database at /data/watchdog.db');
+            fs.mkdirSync('/data/evidence', { recursive: true });
+            fs.writeFileSync('/data/evidence/ci-probe', 'ok');
+            fs.rmSync('/data/evidence/ci-probe');
+            console.log('uid', process.getuid(), 'can write /data');
+          "
+      - if: failure()
+        run: docker compose logs
+      - if: always()
+        run: docker compose down --volumes
