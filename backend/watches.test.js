@@ -347,6 +347,28 @@ test('POST /watches/:id/check surfaces scrape failures as 502', async (t) => {
   assert.equal(res.status, 502);
 });
 
+test('a manual check records when it ran and clears or keeps the error, leaving the schedule alone', async (t) => {
+  t.mock.method(scraper, 'validateScrapeUrl', async (url) => ({ ok: true, parsedUrl: url }));
+  const created = await (await post('/watches', { url: 'https://checked.test', frequency: 'daily' })).json();
+  const before = Date.now();
+
+  t.mock.method(scraper, 'captureSnapshot', async () => { throw new Error('page.goto: net::ERR_CONNECTION_CLOSED'); });
+  assert.equal((await post(`/watches/${created.id}/check`)).status, 502);
+  const failed = await (await fetch(`${base}/watches/${created.id}`)).json();
+  assert.ok(failed.lastCheckedAt >= before);
+  assert.equal(failed.lastError, 'page.goto: net::ERR_CONNECTION_CLOSED');
+  assert.equal(failed.failureCount, 0);
+  assert.equal(failed.status, 'active');
+  assert.equal(failed.nextCheckAt, created.nextCheckAt);
+
+  t.mock.method(scraper, 'captureSnapshot', async () => ({ content: 'Terms v1', screenshotPath: null }));
+  assert.equal((await post(`/watches/${created.id}/check`)).status, 200);
+  const ok = await (await fetch(`${base}/watches/${created.id}`)).json();
+  assert.ok(ok.lastCheckedAt >= failed.lastCheckedAt);
+  assert.equal(ok.lastError, null);
+  assert.equal(ok.nextCheckAt, created.nextCheckAt);
+});
+
 test('POST /watches/:id/check is 503 when the scraper is at capacity', async (t) => {
   t.mock.method(scraper, 'validateScrapeUrl', async (url) => ({ ok: true, parsedUrl: url }));
   const created = await (await post('/watches', { url: 'https://d.test', frequency: 'daily' })).json();

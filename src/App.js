@@ -3,6 +3,7 @@ import Sidebar from './Sidebar';
 import Chat from './Chat';
 import UrlModal from './UrlModal';
 import AppHeader from './components/AppHeader';
+import AppNav from './components/AppNav';
 import ChatInput from './components/ChatInput';
 import OptionsBar from './components/OptionsBar';
 import ChangeExplanation from './components/ChangeExplanation';
@@ -10,6 +11,7 @@ import ScrapedDataModal from './components/ScrapedDataModal';
 import ScreenshotModal from './components/ScreenshotModal';
 import SpunEditor from './components/SpunEditor';
 import Toast from './components/Toast';
+import WatchesPage from './components/WatchesPage';
 import { useNotifications } from './hooks/useNotifications';
 import { useScrapeWorkflow } from './hooks/useScrapeWorkflow';
 import { useSessions } from './hooks/useSessions';
@@ -19,6 +21,7 @@ import { findLastIndexByType } from './utils/messages';
 import './App.css';
 
 function App() {
+  const [view, setView] = useState('watches'); // 'watches' | 'chat'
   const { sessions, currentSession, currentSessionId, selectSession, updateSession, addSession, deleteSession } = useSessions();
   const { notifications, toast, notify } = useNotifications();
   const workflow = useScrapeWorkflow({
@@ -76,41 +79,51 @@ function App() {
   const hasScrape = !!(currentSession?.scrapedContent && currentSession?.screenshotPath);
 
   return (
-    <div className="app-layout">
-      <Sidebar
-        sessions={sessions}
-        currentSessionId={currentSessionId}
-        onSelectSession={selectSession}
-        onDeleteSession={deleteSession}
-      />
-      <div className="main-area" style={{ filter: awaitingUrl ? 'blur(2px)' : 'none', pointerEvents: awaitingUrl ? 'none' : 'auto' }}>
-        <AppHeader onNewChat={addSession} notifications={notifications} />
-        {workflow.loading && <div style={{ padding: 20 }}>Loading and scraping URL...</div>}
-        <Chat
-          messages={chatMessages}
-          spunIndex={spunIndex}
-          showEditButton={!editor.editing && !!spunMsg}
-          onEditSpun={editor.start}
-        />
-        <ChatInput onSend={workflow.sendMessage} />
-        {hasScrape && (
-          <OptionsBar
-            onShowScreenshot={() => setModal('screenshot')}
-            onShowScrapedData={() => setModal('scrapedData')}
-            onCheckForChanges={watchCheck.checkForChanges}
-            checking={watchCheck.checking}
-          />
-        )}
-        {modal === 'screenshot' && currentSession?.screenshotPath && (
-          <ScreenshotModal screenshotPath={currentSession.screenshotPath} onClose={() => setModal(null)} />
-        )}
-        {modal === 'scrapedData' && currentSession?.scrapedContent && (
-          <ScrapedDataModal content={currentSession.scrapedContent} onClose={() => setModal(null)} />
-        )}
-        <Toast message={toast} />
+    <>
+      <AppNav view={view} onChange={setView} />
+      {/* Both views stay mounted and the inactive one is hidden, so a running
+          check or chat keeps its state while the other view is shown. */}
+      <div hidden={view !== 'watches'}>
+        <WatchesPage />
       </div>
-      {awaitingUrl && <UrlModal onSubmit={workflow.submitUrl} />}
-    </div>
+      <div hidden={view !== 'chat'}>
+        <div className="app-layout">
+          <Sidebar
+            sessions={sessions}
+            currentSessionId={currentSessionId}
+            onSelectSession={selectSession}
+            onDeleteSession={deleteSession}
+          />
+          <div className="main-area" style={{ filter: awaitingUrl ? 'blur(2px)' : 'none', pointerEvents: awaitingUrl ? 'none' : 'auto' }}>
+            <AppHeader onNewChat={addSession} notifications={notifications} />
+            {workflow.loading && <div style={{ padding: 20 }}>Loading and scraping URL...</div>}
+            <Chat
+              messages={chatMessages}
+              spunIndex={spunIndex}
+              showEditButton={!editor.editing && !!spunMsg}
+              onEditSpun={editor.start}
+            />
+            <ChatInput onSend={workflow.sendMessage} />
+            {hasScrape && (
+              <OptionsBar
+                onShowScreenshot={() => setModal('screenshot')}
+                onShowScrapedData={() => setModal('scrapedData')}
+                onCheckForChanges={watchCheck.checkForChanges}
+                checking={watchCheck.checking}
+              />
+            )}
+            {modal === 'screenshot' && currentSession?.screenshotPath && (
+              <ScreenshotModal screenshotPath={currentSession.screenshotPath} onClose={() => setModal(null)} />
+            )}
+            {modal === 'scrapedData' && currentSession?.scrapedContent && (
+              <ScrapedDataModal content={currentSession.scrapedContent} onClose={() => setModal(null)} />
+            )}
+          </div>
+          {awaitingUrl && <UrlModal onSubmit={workflow.submitUrl} />}
+        </div>
+      </div>
+      <Toast message={toast} />
+    </>
   );
 }
 

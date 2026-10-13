@@ -14,10 +14,12 @@ beforeEach(() => {
   api.scrapeUrl.mockResolvedValue({ content: 'scraped page text', screenshotPath: 'screenshots/a.png' });
   api.spinText.mockResolvedValue({ spun: 'spun page text' });
   api.askWithRouting.mockResolvedValue({ text: 'It is about testing.', routedTo: 'chat' });
+  api.listWatches.mockResolvedValue([]);
 });
 
 async function renderApp() {
   render(<App />);
+  userEvent.click(screen.getByRole('button', { name: 'Chat demo' }));
   await screen.findByText('Enter Page URL');
 }
 
@@ -153,4 +155,15 @@ test('asking without scraped content explains what is needed', async () => {
   userEvent.click(screen.getByRole('button', { name: 'Send' }));
   expect(await screen.findByText(/No scraped content is available yet/)).toBeInTheDocument();
   expect(api.askWithRouting).not.toHaveBeenCalled();
+});
+
+test('the chat survives switching to the watched pages view and back', async () => {
+  await renderApp();
+  await submitUrl();
+  await screen.findByText('spun page text');
+
+  userEvent.click(screen.getByRole('button', { name: 'Watched pages' }));
+  expect(await screen.findByText(/No pages are watched yet/)).toBeInTheDocument();
+  userEvent.click(screen.getByRole('button', { name: 'Chat demo' }));
+  expect(screen.getByText('spun page text')).toBeInTheDocument();
 });

@@ -422,6 +422,16 @@ async function checkWatchNow(watchId) {
   return { changed: true, snapshot: { id: snapshotId, contentHash }, change };
 }
 
+// A manual check records when it ran and how it ended, like a scheduled one,
+// so "last checked" isn't stale. It leaves the schedule alone: failure count,
+// backoff and status stay the scheduler's to manage.
+function recordManualCheck(watchId, error) {
+  const now = Date.now();
+  getDb()
+    .prepare('UPDATE watches SET last_checked_at = ?, last_error = ?, updated_at = ? WHERE id = ?')
+    .run(now, error ? String(error.message || error).slice(0, 500) : null, now, watchId);
+}
+
 // Manually trigger a check for one watch outside its schedule.
 router.post('/:id/check', async (req, res) => {
   const watch = getWatchOr404(req, res);
@@ -434,12 +444,14 @@ router.post('/:id/check', async (req, res) => {
 
   try {
     const result = await runCheck(watch.id);
+    recordManualCheck(watch.id, null);
     res.json(result);
   } catch (err) {
     if (err instanceof CheckInProgressError) {
       res.set('Retry-After', '5');
       return res.status(409).json({ error: 'This page is already being checked, please retry shortly.' });
     }
+    recordManualCheck(watch.id, err);
     console.error('[watches/check] error:', err.message);
     res.status(502).json({ error: 'Could not check the watched page.' });
   }
