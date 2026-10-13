@@ -1,32 +1,65 @@
 version: 2
+
+# One pull request per area per week, with every minor and patch update in
+# it, instead of one per package. Major versions are left out: they change
+# APIs (express 5, user-event 14 broke the build), so each one is taken on
+# deliberately as its own issue.
 updates:
   - package-ecosystem: npm
     directory: /
     schedule:
       interval: weekly
+    groups:
+      frontend:
+        patterns: ["*"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: npm
     directory: /backend
     schedule:
       interval: weekly
-    # The backend image's bundled Chromium must match this package, so the
-    # two move together by hand rather than in separate Dependabot PRs.
+    groups:
+      backend:
+        patterns: ["*"]
     ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+      # The backend image's bundled Chromium must match this package, so the
+      # two move together by hand rather than in Dependabot PRs.
       - dependency-name: playwright
 
   - package-ecosystem: docker
     directory: /
     schedule:
       interval: weekly
+    groups:
+      frontend-image:
+        patterns: ["*"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: docker
     directory: /backend
     schedule:
       interval: weekly
+    groups:
+      backend-image:
+        patterns: ["*"]
     ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
       - dependency-name: playwright
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
