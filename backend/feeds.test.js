@@ -86,6 +86,8 @@ test('a feed with no alerts is still a valid empty RSS document', async (t) => {
   const res = await feed(`/watches/${watch.id}/feed.xml`);
   assert.equal(res.status, 200);
   assert.match(res.headers.get('content-type'), /application\/rss\+xml/);
+  assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
+  assert.equal(res.headers.get('x-powered-by'), null);
   const xml = await res.text();
   assert.match(xml, /^<\?xml version="1\.0" encoding="UTF-8"\?>/);
   assert.match(xml, /<rss version="2\.0"><channel>/);

@@ -123,7 +123,8 @@ test('the page is locked down: no scripts, no referrer, scraped markup shown as 
   });
   const res = await open(`/evidence/changes/${id}`);
   const csp = res.headers.get('content-security-policy');
-  assert.match(csp, /default-src 'none'/);
+  assert.equal(csp,
+    "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
   assert.doesNotMatch(csp, /script-src/, 'no script source is allowed at all');
   assert.equal(res.headers.get('referrer-policy'), 'no-referrer');
   assert.equal(res.headers.get('cache-control'), 'no-store');
