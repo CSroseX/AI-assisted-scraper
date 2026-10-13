@@ -43,6 +43,15 @@ jobs:
       - run: npm run build
         env:
           CI: "true"
+      # CRA inlines every REACT_APP_* variable, name and value, into the public
+      # bundle, whether or not the code reads it. LINK_TOKEN unlocks feeds and
+      # evidence pages, so it must never be there.
+      - name: The build carries no LINK_TOKEN
+        run: |
+          if grep -rIl -e LINK_TOKEN -e 'token=' build/; then
+            echo "The frontend build contains LINK_TOKEN or a ?token= link"
+            exit 1
+          fi
 
   docker:
     name: docker (compose)

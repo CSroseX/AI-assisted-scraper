@@ -511,6 +511,55 @@ test('a stored snapshot keeps its screenshot as evidence, beyond the transient c
   assert.equal(fs.existsSync(evidenceFile(`evidence/${path.basename(repeatShot)}`)), false);
 });
 
+test('the UI can read a snapshot text and screenshot without LINK_TOKEN', async (t) => {
+  explainerOff(t);
+  t.mock.method(scraper, 'validateScrapeUrl', async (url) => ({ ok: true, parsedUrl: url }));
+  const created = await (await post('/watches', { url: 'https://snapshot-files.test', frequency: 'daily' })).json();
+  const shot = transientScreenshot(t);
+  t.mock.method(scraper, 'captureSnapshot', async () => ({ content: 'Price: $10/month.', screenshotPath: shot }));
+  await post(`/watches/${created.id}/check`);
+  const [listed] = await (await get(`/watches/${created.id}/snapshots`)).json();
+
+  const snapshot = await (await get(`/watches/${created.id}/snapshots/${listed.id}`)).json();
+  assert.equal(snapshot.content, 'Price: $10/month.');
+  assert.equal(snapshot.screenshotPath, listed.screenshotPath);
+
+  // No ?token=: the frontend never holds LINK_TOKEN.
+  const res = await get(`/watches/${created.id}/snapshots/${listed.id}/screenshot`);
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('content-type'), 'image/png');
+  assert.equal(await res.text(), 'png-bytes');
+  // An <img> on the frontend's origin must be allowed to load it...
+  assert.equal(res.headers.get('cross-origin-resource-policy'), 'cross-origin');
+  // ...without losing the other helmet headers.
+  assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
+});
+
+test('snapshot routes return 404 for other watches, missing files and path tricks', async (t) => {
+  explainerOff(t);
+  t.mock.method(scraper, 'validateScrapeUrl', async (url) => ({ ok: true, parsedUrl: url }));
+  const mine = await (await post('/watches', { url: 'https://snapshot-404.test', frequency: 'daily' })).json();
+  const other = await (await post('/watches', { url: 'https://snapshot-other.test', frequency: 'daily' })).json();
+  t.mock.method(scraper, 'captureSnapshot', async () => ({ content: 'No screenshot here.', screenshotPath: null }));
+  await post(`/watches/${mine.id}/check`);
+  const [snapshot] = await (await get(`/watches/${mine.id}/snapshots`)).json();
+
+  // Another watch's id can't reach this snapshot.
+  assert.equal((await get(`/watches/${other.id}/snapshots/${snapshot.id}`)).status, 404);
+  assert.equal((await get(`/watches/${other.id}/snapshots/${snapshot.id}/screenshot`)).status, 404);
+  // The snapshot exists but has no screenshot.
+  assert.equal((await get(`/watches/${mine.id}/snapshots/${snapshot.id}/screenshot`)).status, 404);
+  for (const bad of ['..%2F..%2Fwatchdog.db', '..', '-1', '0', `${snapshot.id}.png`, '1e3']) {
+    assert.equal((await get(`/watches/${mine.id}/snapshots/${bad}/screenshot`)).status, 404, bad);
+  }
+
+  // Even a tampered stored path never resolves outside evidence storage.
+  for (const tampered of ['evidence/../../watchdog.db', '../watchdog.db', 'evidence/x.png/../../secret.png']) {
+    getDb().prepare('UPDATE snapshots SET screenshot_path = ? WHERE id = ?').run(tampered, snapshot.id);
+    assert.equal((await get(`/watches/${mine.id}/snapshots/${snapshot.id}/screenshot`)).status, 404, tampered);
+  }
+});
+
 test('when the snapshot write fails, its kept screenshot is discarded too', async (t) => {
   const { evidenceFile } = require('./evidence');
   explainerOff(t);
