@@ -9,6 +9,7 @@ const dbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'watchdog-feeds-test-'));
 process.env.DB_PATH = path.join(dbDir, 'test.db');
 process.env.GROQ_API_KEY = 'test-key';
 process.env.RATE_LIMIT_MAX = '10000';
+process.env.SCRAPE_RATE_LIMIT_MAX = '10000';
 process.env.EXPLAIN_ENABLED = 'false';
 
 const TOKEN = 'test-feed-token-0123456789';

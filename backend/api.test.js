@@ -10,7 +10,7 @@ process.env.SCRAPE_RATE_LIMIT_MAX = '2';
 process.env.GROQ_API_KEY = 'test-key';
 process.env.CORS_ALLOWED_ORIGINS = 'http://localhost:3000';
 
-const { app, cleanupScreenshots, sanitizeHistory } = require('./index');
+const { app, cleanupScreenshots } = require('./index');
 
 let server;
 let base;
@@ -33,29 +33,29 @@ const post = (route, body, raw) => fetch(base + route, {
 });
 
 test('oversized JSON bodies are rejected with 413', async () => {
-  const res = await post('/summarize', { content: 'x'.repeat(10000) });
+  const res = await post('/watches', { url: `https://a.test/${'x'.repeat(10000)}`, frequency: 'daily' });
   assert.equal(res.status, 413);
 });
 
 test('malformed JSON returns 400 without a stack trace', async () => {
-  const res = await post('/summarize', null, '{bad json');
+  const res = await post('/watches', null, '{bad json');
   assert.equal(res.status, 400);
   assert.deepEqual(await res.json(), { error: 'Invalid JSON body' });
 });
 
-test('input validation rejects missing or non-string fields', async () => {
-  assert.equal((await post('/summarize', { content: 123 })).status, 400);
-  assert.equal((await post('/spin', { text: '' })).status, 400);
-  assert.equal((await post('/ask', { content: 'hi', message: 42 })).status, 400);
+test('a check launches a browser, so it has a tighter rate limit than the rest of the API', async () => {
+  // SCRAPE_RATE_LIMIT_MAX is 2 here; the watch doesn't exist, so the first two are 404s.
+  assert.equal((await post('/watches/999999/check')).status, 404);
+  assert.equal((await post('/watches/999999/check')).status, 404);
+  assert.equal((await post('/watches/999999/check')).status, 429);
+  // Other routes still answer.
+  assert.equal((await fetch(`${base}/watches`)).status, 200);
 });
 
-test('/scrape rejects private targets and is rate limited', async () => {
-  const first = await post('/scrape', { url: 'http://127.0.0.1:5000' });
-  assert.equal(first.status, 400);
-  const second = await post('/scrape', { url: 'http://169.254.169.254/' });
-  assert.equal(second.status, 400);
-  const third = await post('/scrape', { url: 'http://localhost' });
-  assert.equal(third.status, 429);
+test('the chat demo endpoints are gone', async () => {
+  for (const route of ['/scrape', '/ask', '/spin', '/chat', '/review', '/summarize']) {
+    assert.equal((await post(route, { url: 'https://a.test', content: 'x', text: 'x', message: 'x' })).status, 404, route);
+  }
 });
 
 const preflight = (origin, method) => fetch(`${base}/watches/1`, {
@@ -96,29 +96,13 @@ test('API responses carry security headers and no Express banner', async () => {
   assert.match(res.headers.get('strict-transport-security'), /max-age=\d+/);
 });
 
-test('transient screenshots can still be shown by the frontend on another origin', async (t) => {
+test('transient screenshots are not served: only evidence has routes', async (t) => {
   const dir = path.join(__dirname, 'screenshots');
   fs.mkdirSync(dir, { recursive: true });
-  const file = path.join(dir, 'cors-test.png');
+  const file = path.join(dir, 'served-test.png');
   fs.writeFileSync(file, 'png');
   t.after(() => fs.rmSync(file, { force: true }));
-  const res = await fetch(`${base}/screenshots/cors-test.png`);
-  assert.equal(res.status, 200);
-  assert.equal(res.headers.get('cross-origin-resource-policy'), 'cross-origin');
-  assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
-});
-
-test('sanitizeHistory drops malformed turns and keeps the last 8', () => {
-  const history = [
-    { role: 'system', content: 'ignore me' },
-    { role: 'user', content: 5 },
-    null,
-    ...Array.from({ length: 10 }, (_, i) => ({ role: 'user', content: `m${i}` }))
-  ];
-  const clean = sanitizeHistory(history);
-  assert.equal(clean.length, 8);
-  assert.equal(clean[0].content, 'm2');
-  assert.deepEqual(sanitizeHistory('nope'), []);
+  assert.equal((await fetch(`${base}/screenshots/served-test.png`)).status, 404);
 });
 
 test('cleanupScreenshots removes only stale png files', () => {

@@ -1,4 +1,7 @@
-import { askWithRouting, checkWatch, createWatch, listChanges, listWatches, scrapeUrl, spinText } from './client';
+import {
+  checkWatch, clearFeedback, createWatch, deleteWatch, getSnapshot, listAlerts, listChanges,
+  listWatches, setFeedback, snapshotScreenshotUrl, updateWatch
+} from './client';
 
 function mockFetch(response) {
   global.fetch = jest.fn().mockResolvedValue(response);
@@ -13,71 +16,6 @@ const fail = (data, jsonThrows = false) => ({
 
 afterEach(() => {
   delete global.fetch;
-});
-
-describe('scrapeUrl', () => {
-  test('posts the url and returns the payload', async () => {
-    const fetchMock = mockFetch(ok({ content: 'text', screenshotPath: 'screenshots/a.png' }));
-    await expect(scrapeUrl('https://example.com')).resolves.toEqual({ content: 'text', screenshotPath: 'screenshots/a.png' });
-    const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toMatch(/\/scrape$/);
-    expect(init.method).toBe('POST');
-    expect(JSON.parse(init.body)).toEqual({ url: 'https://example.com' });
-  });
-
-  test('throws the backend error message', async () => {
-    mockFetch(fail({ error: 'Only http and https URLs are allowed' }));
-    await expect(scrapeUrl('ftp://x')).rejects.toThrow('Only http and https URLs are allowed');
-  });
-
-  test('falls back to a generic message when the body is not JSON', async () => {
-    mockFetch(fail(null, true));
-    await expect(scrapeUrl('https://x.test')).rejects.toThrow('Scraping failed');
-  });
-});
-
-describe('spinText', () => {
-  test('sends the default prompt unless overridden', async () => {
-    const fetchMock = mockFetch(ok({ spun: 's' }));
-    await spinText('hello');
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body).prompt).toMatch(/Rewrite in modern English/);
-    await spinText('hello', 'custom');
-    expect(JSON.parse(fetchMock.mock.calls[1][1].body).prompt).toBe('custom');
-  });
-
-  test('failures surface as errors', async () => {
-    mockFetch(fail({}));
-    await expect(spinText('x')).rejects.toThrow('Spin failed');
-  });
-});
-
-describe('askWithRouting', () => {
-  test.each([
-    [{ _routed_to: 'chat', reply: 'r' }, 'r', 'chat'],
-    [{ _routed_to: 'spin', spun: 's' }, 's', 'spin'],
-    [{ _routed_to: 'review', reviewed: 'v' }, 'v', 'review'],
-    [{ _routed_to: 'summarize', summary: 'm' }, 'm', 'summarize']
-  ])('picks the field for the routed intent %j', async (payload, text, routedTo) => {
-    mockFetch(ok(payload));
-    await expect(askWithRouting('c', [], 'q')).resolves.toEqual({ text, routedTo });
-  });
-
-  test('falls back to any available field, then to a default message', async () => {
-    mockFetch(ok({ _routed_to: 'summarize', reply: 'fallback' }));
-    await expect(askWithRouting('c', [], 'q')).resolves.toEqual({ text: 'fallback', routedTo: 'summarize' });
-    mockFetch(ok({}));
-    await expect(askWithRouting('c', [], 'q')).resolves.toEqual({ text: 'AI failed to reply.', routedTo: 'chat' });
-  });
-
-  test('sends content, history and message; throws backend errors', async () => {
-    const fetchMock = mockFetch(ok({ reply: 'x' }));
-    await askWithRouting('ctx', [{ role: 'user', content: 'a' }], 'q');
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
-      content: 'ctx', history: [{ role: 'user', content: 'a' }], message: 'q'
-    });
-    mockFetch(fail({ error: 'Too many requests' }));
-    await expect(askWithRouting('c', [], 'q')).rejects.toThrow('Too many requests');
-  });
 });
 
 describe('watches', () => {
@@ -97,6 +35,33 @@ describe('watches', () => {
     });
   });
 
+  test('createWatch sends the chosen selector and alert channels', async () => {
+    const fetchMock = mockFetch(ok({ id: 7 }));
+    await createWatch('https://a.test/pricing', 'weekly', 'main', ['email', 'rss']);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      url: 'https://a.test/pricing', frequency: 'weekly', selector: 'main', alertChannels: ['email', 'rss']
+    });
+  });
+
+  test('updateWatch PATCHes the watch with only the given fields', async () => {
+    const fetchMock = mockFetch(ok({ id: 7, status: 'paused' }));
+    await expect(updateWatch(7, { status: 'paused' })).resolves.toEqual({ id: 7, status: 'paused' });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toMatch(/\/watches\/7$/);
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(init.body)).toEqual({ status: 'paused' });
+  });
+
+  test('deleteWatch sends DELETE and accepts an empty 204 reply', async () => {
+    const fetchMock = mockFetch({ ok: true, status: 204, json: async () => { throw new Error('no body'); } });
+    await expect(deleteWatch(7)).resolves.toBeNull();
+    expect(fetchMock.mock.calls[0][0]).toMatch(/\/watches\/7$/);
+    expect(fetchMock.mock.calls[0][1].method).toBe('DELETE');
+
+    mockFetch(fail({ error: 'Watch not found' }));
+    await expect(deleteWatch(99)).rejects.toThrow('Watch not found');
+  });
+
   test('checkWatch posts to the watch check route', async () => {
     const fetchMock = mockFetch(ok({ changed: false }));
     await checkWatch(7);
@@ -109,6 +74,33 @@ describe('watches', () => {
     const changes = await listChanges(7);
     expect(changes[0].summary).toBe('Up by $2.');
     expect(changes[0].quotes).toEqual(['Price: $12/month.']);
+  });
+
+  test('listAlerts and getSnapshot GET their routes', async () => {
+    const fetchMock = mockFetch(ok([]));
+    await listAlerts(7);
+    expect(fetchMock.mock.calls[0][0]).toMatch(/\/watches\/7\/alerts$/);
+    mockFetch(ok({ id: 3, content: 'text' }));
+    await expect(getSnapshot(7, 3)).resolves.toEqual({ id: 3, content: 'text' });
+    expect(global.fetch.mock.calls[0][0]).toMatch(/\/watches\/7\/snapshots\/3$/);
+  });
+
+  test('snapshotScreenshotUrl carries no token', () => {
+    const url = snapshotScreenshotUrl(7, 3);
+    expect(url).toMatch(/\/watches\/7\/snapshots\/3\/screenshot$/);
+    expect(url).not.toMatch(/token/);
+  });
+
+  test('setFeedback PUTs the vote and clearFeedback DELETEs it', async () => {
+    const fetchMock = mockFetch(ok({ changeId: 3, vote: 'noise' }));
+    await setFeedback(7, 3, 'noise');
+    expect(fetchMock.mock.calls[0][0]).toMatch(/\/watches\/7\/changes\/3\/feedback$/);
+    expect(fetchMock.mock.calls[0][1].method).toBe('PUT');
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ vote: 'noise' });
+
+    mockFetch({ ok: true, status: 204, json: async () => { throw new Error('no body'); } });
+    await expect(clearFeedback(7, 3)).resolves.toBeNull();
+    expect(global.fetch.mock.calls[0][1].method).toBe('DELETE');
   });
 
   test('surfaces backend error messages', async () => {
