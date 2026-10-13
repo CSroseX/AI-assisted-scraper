@@ -11,6 +11,7 @@ process.env.GROQ_API_KEY = 'test-key';
 // This file sends well over the default 60 requests a minute; rate limiting is
 // not what it tests.
 process.env.RATE_LIMIT_MAX = '10000';
+process.env.SCRAPE_RATE_LIMIT_MAX = '10000';
 
 const axios = require('axios');
 const scraper = require('./scraper');
@@ -299,8 +300,8 @@ test('a check that fails releases its lock', async (t) => {
   const created = await (await post('/watches', { url: 'https://lock-release.test', frequency: 'daily' })).json();
 
   t.mock.method(scraper, 'captureSnapshot', async () => { throw new Error('boom'); });
-  assert.equal((await post(`/watches/${created.id}/check`)).status, 502);
-  assert.equal((await post(`/watches/${created.id}/check`)).status, 502, 'not 409: the failed check must not stay locked');
+  assert.equal((await post(`/watches/${created.id}/check`)).status, 500);
+  assert.equal((await post(`/watches/${created.id}/check`)).status, 500, 'not 409: the failed check must not stay locked');
 });
 
 test('opening the database backfills fingerprints missing from older changes', async (t) => {
@@ -338,13 +339,103 @@ test('an unchanged page never reaches the model', async (t) => {
   assert.equal(calls.length, 0);
 });
 
-test('POST /watches/:id/check surfaces scrape failures as 502', async (t) => {
+test('POST /watches/:id/check is 502 when the page is at fault, 500 when the error is ours', async (t) => {
   t.mock.method(scraper, 'validateScrapeUrl', async (url) => ({ ok: true, parsedUrl: url }));
   const created = await (await post('/watches', { url: 'https://c.test', frequency: 'daily' })).json();
 
+  t.mock.method(scraper, 'captureSnapshot', async () => { throw new Error('page.goto: Timeout 20000ms exceeded.'); });
+  const timedOut = await post(`/watches/${created.id}/check`);
+  assert.equal(timedOut.status, 502);
+  assert.deepEqual(await timedOut.json(), { error: 'The page took too long to load.', reason: 'timeout' });
+
   t.mock.method(scraper, 'captureSnapshot', async () => { throw new Error('boom'); });
+  const unexpected = await post(`/watches/${created.id}/check`);
+  assert.equal(unexpected.status, 500);
+  assert.equal((await unexpected.json()).reason, 'unknown');
+});
+
+test('a manual check records when it ran and clears or keeps the error, leaving the schedule alone', async (t) => {
+  t.mock.method(scraper, 'validateScrapeUrl', async (url) => ({ ok: true, parsedUrl: url }));
+  const created = await (await post('/watches', { url: 'https://checked.test', frequency: 'daily' })).json();
+  const before = Date.now();
+
+  t.mock.method(scraper, 'captureSnapshot', async () => { throw new Error('page.goto: net::ERR_CONNECTION_CLOSED'); });
+  assert.equal((await post(`/watches/${created.id}/check`)).status, 502);
+  const failed = await (await fetch(`${base}/watches/${created.id}`)).json();
+  assert.ok(failed.lastCheckedAt >= before);
+  assert.equal(failed.lastError, 'page.goto: net::ERR_CONNECTION_CLOSED');
+  assert.equal(failed.lastErrorReason, 'unreachable');
+  assert.equal(failed.failureCount, 0);
+  assert.equal(failed.status, 'active');
+  assert.equal(failed.nextCheckAt, created.nextCheckAt);
+
+  t.mock.method(scraper, 'captureSnapshot', async () => ({ content: 'Terms v1', screenshotPath: null }));
+  assert.equal((await post(`/watches/${created.id}/check`)).status, 200);
+  const ok = await (await fetch(`${base}/watches/${created.id}`)).json();
+  assert.ok(ok.lastCheckedAt >= failed.lastCheckedAt);
+  assert.equal(ok.lastError, null);
+  assert.equal(ok.nextCheckAt, created.nextCheckAt);
+});
+
+test('a bot check page never becomes a snapshot or a change, and the watch says why', async (t) => {
+  const { PageUnreadableError } = require('./failures');
+  explainerOff(t);
+  t.mock.method(scraper, 'validateScrapeUrl', async (url) => ({ ok: true, parsedUrl: url }));
+  const created = await (await post('/watches', { url: 'https://walled.test/pricing', frequency: 'daily' })).json();
+  const challenge = async () => { throw new PageUnreadableError('bot_protection', 'Bot check page (matched "rayid:")'); };
+  const snapshotCount = () => getDb().prepare('SELECT COUNT(*) AS n FROM snapshots WHERE watch_id = ?').get(created.id).n;
+  const changeCount = () => getDb().prepare('SELECT COUNT(*) AS n FROM changes WHERE watch_id = ?').get(created.id).n;
+
+  t.mock.method(scraper, 'captureSnapshot', challenge);
   const res = await post(`/watches/${created.id}/check`);
   assert.equal(res.status, 502);
+  assert.deepEqual(await res.json(), {
+    error: 'The site showed a bot check (a challenge or captcha page) instead of the page.',
+    reason: 'bot_protection'
+  });
+  assert.equal(snapshotCount(), 0);
+
+  const watch = await (await get(`/watches/${created.id}`)).json();
+  assert.equal(watch.lastErrorReason, 'bot_protection');
+  assert.equal(watch.lastErrorMessage, 'The site showed a bot check (a challenge or captcha page) instead of the page.');
+  assert.match(watch.lastError, /rayid/);
+
+  // The real page arrives, then the wall returns: still no false change.
+  t.mock.method(scraper, 'captureSnapshot', async () => ({ content: 'Pro: $10/month.', screenshotPath: null }));
+  assert.equal((await post(`/watches/${created.id}/check`)).status, 200);
+  t.mock.method(scraper, 'captureSnapshot', challenge);
+  assert.equal((await post(`/watches/${created.id}/check`)).status, 502);
+  assert.equal(snapshotCount(), 1);
+  assert.equal(changeCount(), 0);
+
+  // A good check clears the reason, as resuming does.
+  t.mock.method(scraper, 'captureSnapshot', async () => ({ content: 'Pro: $10/month.', screenshotPath: null }));
+  await post(`/watches/${created.id}/check`);
+  const cleared = await (await get(`/watches/${created.id}`)).json();
+  assert.equal(cleared.lastErrorReason, null);
+  assert.equal(cleared.lastErrorMessage, null);
+});
+
+test('a manual check records when it ran and clears or keeps the error, leaving the schedule alone', async (t) => {
+  t.mock.method(scraper, 'validateScrapeUrl', async (url) => ({ ok: true, parsedUrl: url }));
+  const created = await (await post('/watches', { url: 'https://checked.test', frequency: 'daily' })).json();
+  const before = Date.now();
+
+  t.mock.method(scraper, 'captureSnapshot', async () => { throw new Error('page.goto: net::ERR_CONNECTION_CLOSED'); });
+  assert.equal((await post(`/watches/${created.id}/check`)).status, 502);
+  const failed = await (await fetch(`${base}/watches/${created.id}`)).json();
+  assert.ok(failed.lastCheckedAt >= before);
+  assert.equal(failed.lastError, 'page.goto: net::ERR_CONNECTION_CLOSED');
+  assert.equal(failed.failureCount, 0);
+  assert.equal(failed.status, 'active');
+  assert.equal(failed.nextCheckAt, created.nextCheckAt);
+
+  t.mock.method(scraper, 'captureSnapshot', async () => ({ content: 'Terms v1', screenshotPath: null }));
+  assert.equal((await post(`/watches/${created.id}/check`)).status, 200);
+  const ok = await (await fetch(`${base}/watches/${created.id}`)).json();
+  assert.ok(ok.lastCheckedAt >= failed.lastCheckedAt);
+  assert.equal(ok.lastError, null);
+  assert.equal(ok.nextCheckAt, created.nextCheckAt);
 });
 
 test('POST /watches/:id/check is 503 when the scraper is at capacity', async (t) => {
@@ -468,7 +559,7 @@ test('if alerts cannot be queued, the snapshot and change roll back and the next
 
   explainerOff(t);
   t.mock.method(scraper, 'captureSnapshot', async () => ({ content: 'Fee: $2.', screenshotPath: null }));
-  assert.equal((await post(`/watches/${created.id}/check`)).status, 502);
+  assert.equal((await post(`/watches/${created.id}/check`)).status, 500, 'a failed write is our fault, not the page');
   assert.equal((await (await get(`/watches/${created.id}/snapshots`)).json()).length, 1, 'no half-written snapshot');
   assert.equal((await (await get(`/watches/${created.id}/changes`)).json()).length, 0);
 
@@ -511,6 +602,55 @@ test('a stored snapshot keeps its screenshot as evidence, beyond the transient c
   assert.equal(fs.existsSync(evidenceFile(`evidence/${path.basename(repeatShot)}`)), false);
 });
 
+test('the UI can read a snapshot text and screenshot without LINK_TOKEN', async (t) => {
+  explainerOff(t);
+  t.mock.method(scraper, 'validateScrapeUrl', async (url) => ({ ok: true, parsedUrl: url }));
+  const created = await (await post('/watches', { url: 'https://snapshot-files.test', frequency: 'daily' })).json();
+  const shot = transientScreenshot(t);
+  t.mock.method(scraper, 'captureSnapshot', async () => ({ content: 'Price: $10/month.', screenshotPath: shot }));
+  await post(`/watches/${created.id}/check`);
+  const [listed] = await (await get(`/watches/${created.id}/snapshots`)).json();
+
+  const snapshot = await (await get(`/watches/${created.id}/snapshots/${listed.id}`)).json();
+  assert.equal(snapshot.content, 'Price: $10/month.');
+  assert.equal(snapshot.screenshotPath, listed.screenshotPath);
+
+  // No ?token=: the frontend never holds LINK_TOKEN.
+  const res = await get(`/watches/${created.id}/snapshots/${listed.id}/screenshot`);
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('content-type'), 'image/png');
+  assert.equal(await res.text(), 'png-bytes');
+  // An <img> on the frontend's origin must be allowed to load it...
+  assert.equal(res.headers.get('cross-origin-resource-policy'), 'cross-origin');
+  // ...without losing the other helmet headers.
+  assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
+});
+
+test('snapshot routes return 404 for other watches, missing files and path tricks', async (t) => {
+  explainerOff(t);
+  t.mock.method(scraper, 'validateScrapeUrl', async (url) => ({ ok: true, parsedUrl: url }));
+  const mine = await (await post('/watches', { url: 'https://snapshot-404.test', frequency: 'daily' })).json();
+  const other = await (await post('/watches', { url: 'https://snapshot-other.test', frequency: 'daily' })).json();
+  t.mock.method(scraper, 'captureSnapshot', async () => ({ content: 'No screenshot here.', screenshotPath: null }));
+  await post(`/watches/${mine.id}/check`);
+  const [snapshot] = await (await get(`/watches/${mine.id}/snapshots`)).json();
+
+  // Another watch's id can't reach this snapshot.
+  assert.equal((await get(`/watches/${other.id}/snapshots/${snapshot.id}`)).status, 404);
+  assert.equal((await get(`/watches/${other.id}/snapshots/${snapshot.id}/screenshot`)).status, 404);
+  // The snapshot exists but has no screenshot.
+  assert.equal((await get(`/watches/${mine.id}/snapshots/${snapshot.id}/screenshot`)).status, 404);
+  for (const bad of ['..%2F..%2Fwatchdog.db', '..', '-1', '0', `${snapshot.id}.png`, '1e3']) {
+    assert.equal((await get(`/watches/${mine.id}/snapshots/${bad}/screenshot`)).status, 404, bad);
+  }
+
+  // Even a tampered stored path never resolves outside evidence storage.
+  for (const tampered of ['evidence/../../watchdog.db', '../watchdog.db', 'evidence/x.png/../../secret.png']) {
+    getDb().prepare('UPDATE snapshots SET screenshot_path = ? WHERE id = ?').run(tampered, snapshot.id);
+    assert.equal((await get(`/watches/${mine.id}/snapshots/${snapshot.id}/screenshot`)).status, 404, tampered);
+  }
+});
+
 test('when the snapshot write fails, its kept screenshot is discarded too', async (t) => {
   const { evidenceFile } = require('./evidence');
   explainerOff(t);
@@ -524,7 +664,7 @@ test('when the snapshot write fails, its kept screenshot is discarded too', asyn
 
   const shot = transientScreenshot(t);
   t.mock.method(scraper, 'captureSnapshot', async () => ({ content: 'Fee: $2.', screenshotPath: shot }));
-  assert.equal((await post(`/watches/${created.id}/check`)).status, 502);
+  assert.equal((await post(`/watches/${created.id}/check`)).status, 500);
   assert.equal(fs.existsSync(evidenceFile(`evidence/${path.basename(shot)}`)), false, 'no orphaned evidence');
 });
 

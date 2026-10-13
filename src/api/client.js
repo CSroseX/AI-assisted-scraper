@@ -1,9 +1,5 @@
 import { apiUrl } from '../config';
 
-const DEFAULT_SPIN_PROMPT =
-  'Rewrite in modern English and simplify the tone. Remove any special characters and numbers. ' +
-  'Re-write the content in a way that is easy to understand and follow. Do not format the content in any way.';
-
 async function errorMessage(res, fallback) {
   try {
     const data = await res.json();
@@ -14,15 +10,18 @@ async function errorMessage(res, fallback) {
   }
 }
 
-async function postJson(url, body, fallback) {
+async function sendJson(method, url, body, fallback) {
   const res = await fetch(url, {
-    method: 'POST',
+    method,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
   });
   if (!res.ok) throw new Error(await errorMessage(res, fallback));
-  return res.json();
+  // 204 No Content (e.g. a DELETE) has no body to parse.
+  return res.status === 204 ? null : res.json();
 }
+
+const postJson = (url, body, fallback) => sendJson('POST', url, body, fallback);
 
 async function getJson(url, fallback) {
   const res = await fetch(url);
@@ -32,18 +31,20 @@ async function getJson(url, fallback) {
 
 // All functions below throw on failure; callers decide how to surface errors.
 
-export const scrapeUrl = (url) => postJson(apiUrl('/scrape'), { url }, 'Scraping failed');
-
-export const spinText = (text, prompt = DEFAULT_SPIN_PROMPT) =>
-  postJson(apiUrl('/spin'), { text, prompt }, 'Spin failed');
-
 // --- Watches ----------------------------------------------------------------
-// The watchdog surface. Phase 1 step 7 builds the real screens on top of these.
 
 export const listWatches = () => getJson(apiUrl('/watches'), 'Could not load watches');
 
-export const createWatch = (url, frequency = 'daily', selector = null) =>
-  postJson(apiUrl('/watches'), { url, frequency, selector }, 'Could not create the watch');
+// alertChannels is a subset of ['email', 'rss']; left out, the backend uses RSS only.
+export const createWatch = (url, frequency = 'daily', selector = null, alertChannels) =>
+  postJson(apiUrl('/watches'), { url, frequency, selector, alertChannels }, 'Could not create the watch');
+
+// Pause or resume ({ status }) and/or change alert channels ({ alertChannels }).
+export const updateWatch = (id, changes) =>
+  sendJson('PATCH', apiUrl(`/watches/${id}`), changes, 'Could not update the watch');
+
+export const deleteWatch = (id) =>
+  sendJson('DELETE', apiUrl(`/watches/${id}`), undefined, 'Could not delete the watch');
 
 // Runs a check now instead of waiting for the watch's schedule.
 export const checkWatch = (id) =>
@@ -53,18 +54,21 @@ export const checkWatch = (id) =>
 export const listChanges = (id) =>
   getJson(apiUrl(`/watches/${id}/changes`), 'Could not load changes');
 
-// Calls /ask and returns route-aware response text.
-export async function askWithRouting(content, history, message) {
-  const data = await postJson(apiUrl('/ask'), { content, history, message }, 'Request failed');
-  const routedTo = data?._routed_to || 'chat';
+// Every alert the watch queued, one per change and channel, newest first.
+export const listAlerts = (id) =>
+  getJson(apiUrl(`/watches/${id}/alerts`), 'Could not load alerts');
 
-  const fieldByRoute = {
-    chat: data?.reply,
-    spin: data?.spun,
-    review: data?.reviewed,
-    summarize: data?.summary
-  };
-  const fallbackText = data?.reply || data?.spun || data?.reviewed || data?.summary;
-  const text = fieldByRoute[routedTo] || fallbackText || 'AI failed to reply.';
-  return { text, routedTo };
-}
+// One snapshot with its captured text.
+export const getSnapshot = (watchId, snapshotId) =>
+  getJson(apiUrl(`/watches/${watchId}/snapshots/${snapshotId}`), 'Could not load the snapshot');
+
+// For an <img src>. Needs no LINK_TOKEN, which the frontend must never hold.
+export const snapshotScreenshotUrl = (watchId, snapshotId) =>
+  apiUrl(`/watches/${watchId}/snapshots/${snapshotId}/screenshot`);
+
+// Rate a change 'useful' or 'noise'. The noise ratio is counted from these.
+export const setFeedback = (watchId, changeId, vote) =>
+  sendJson('PUT', apiUrl(`/watches/${watchId}/changes/${changeId}/feedback`), { vote }, 'Could not save the rating');
+
+export const clearFeedback = (watchId, changeId) =>
+  sendJson('DELETE', apiUrl(`/watches/${watchId}/changes/${changeId}/feedback`), undefined, 'Could not clear the rating');
