@@ -43,3 +43,42 @@ jobs:
       - run: npm run build
         env:
           CI: "true"
+
+  docker:
+    name: docker (compose)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cp backend/.env.example backend/.env
+      - run: docker compose build
+      - run: docker compose up --detach --wait --wait-timeout 180
+      - run: curl --fail --silent --show-error http://localhost:5000/health
+      - run: curl --fail --silent --show-error http://localhost:5000/watches
+      # Scrapes this repo's own README; example.com asks not to be used for testing.
+      - name: A real scrape works inside the backend container
+        run: |
+          curl --fail --silent --show-error --max-time 90 http://localhost:5000/scrape \
+            -H 'Content-Type: application/json' \
+            -d '{"url":"https://raw.githubusercontent.com/${{ github.repository }}/master/README.md"}' > scrape.json
+          node -e "
+            const r = require('./scrape.json');
+            if (!/AI-Assisted-scraper/.test(r.content)) throw new Error(JSON.stringify(r).slice(0, 500));
+            console.log('scraped', r.content.length, 'chars, screenshot', r.screenshotPath);
+          "
+      - name: The frontend dev server answers
+        run: timeout 180 bash -c 'until curl --fail --silent --output /dev/null http://localhost:3000; do sleep 3; done'
+      - name: The backend writes the database and evidence under /data as a non-root user
+        run: |
+          docker compose exec -T backend node -e "
+            const fs = require('fs');
+            if (process.getuid() === 0) throw new Error('the backend runs as root');
+            if (!fs.existsSync('/data/watchdog.db')) throw new Error('no database at /data/watchdog.db');
+            fs.mkdirSync('/data/evidence', { recursive: true });
+            fs.writeFileSync('/data/evidence/ci-probe', 'ok');
+            fs.rmSync('/data/evidence/ci-probe');
+            console.log('uid', process.getuid(), 'can write /data');
+          "
+      - if: failure()
+        run: docker compose logs
+      - if: always()
+        run: docker compose down --volumes
