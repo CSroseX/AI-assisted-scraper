@@ -12,4 +12,5 @@ COPY public ./public
 COPY src ./src
 
 EXPOSE 3000
-CMD ["npm", "start"]
+# The base image's entrypoint is node itself, which would run "npm" as a script.
+ENTRYPOINT ["npm", "start"]

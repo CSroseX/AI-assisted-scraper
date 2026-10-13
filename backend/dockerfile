@@ -10,5 +10,13 @@ RUN npm ci
 # Copy the rest of your backend code
 COPY . .
 
+# The data volume takes this directory's owner when Docker first creates it,
+# so the non-root user can write the database and evidence there.
+USER root
+RUN mkdir -p /data && chown node:node /data
+USER node
+
 EXPOSE 5000
-CMD ["npm", "start"]
+# The base image's entrypoint is node itself, so name the script directly.
+# Running node as PID 1 also lets SIGTERM reach the app's graceful shutdown.
+ENTRYPOINT ["node", "index.js"]
