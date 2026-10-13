@@ -1,4 +1,6 @@
-import { askWithRouting, checkWatch, createWatch, listChanges, listWatches, scrapeUrl, spinText } from './client';
+import {
+  askWithRouting, checkWatch, createWatch, deleteWatch, listChanges, listWatches, scrapeUrl, spinText, updateWatch
+} from './client';
 
 function mockFetch(response) {
   global.fetch = jest.fn().mockResolvedValue(response);
@@ -95,6 +97,33 @@ describe('watches', () => {
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
       url: 'https://a.test/pricing', frequency: 'daily', selector: null
     });
+  });
+
+  test('createWatch sends the chosen selector and alert channels', async () => {
+    const fetchMock = mockFetch(ok({ id: 7 }));
+    await createWatch('https://a.test/pricing', 'weekly', 'main', ['email', 'rss']);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      url: 'https://a.test/pricing', frequency: 'weekly', selector: 'main', alertChannels: ['email', 'rss']
+    });
+  });
+
+  test('updateWatch PATCHes the watch with only the given fields', async () => {
+    const fetchMock = mockFetch(ok({ id: 7, status: 'paused' }));
+    await expect(updateWatch(7, { status: 'paused' })).resolves.toEqual({ id: 7, status: 'paused' });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toMatch(/\/watches\/7$/);
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(init.body)).toEqual({ status: 'paused' });
+  });
+
+  test('deleteWatch sends DELETE and accepts an empty 204 reply', async () => {
+    const fetchMock = mockFetch({ ok: true, status: 204, json: async () => { throw new Error('no body'); } });
+    await expect(deleteWatch(7)).resolves.toBeNull();
+    expect(fetchMock.mock.calls[0][0]).toMatch(/\/watches\/7$/);
+    expect(fetchMock.mock.calls[0][1].method).toBe('DELETE');
+
+    mockFetch(fail({ error: 'Watch not found' }));
+    await expect(deleteWatch(99)).rejects.toThrow('Watch not found');
   });
 
   test('checkWatch posts to the watch check route', async () => {
