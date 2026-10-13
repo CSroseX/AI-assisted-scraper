@@ -85,6 +85,29 @@ test('/health is reachable', async () => {
   assert.equal(res.status, 200);
 });
 
+test('API responses carry security headers and no Express banner', async () => {
+  const res = await fetch(`${base}/health`);
+  assert.equal(res.headers.get('x-powered-by'), null);
+  assert.equal(res.headers.get('content-security-policy'), "default-src 'none';frame-ancestors 'none'");
+  assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
+  assert.equal(res.headers.get('x-frame-options'), 'SAMEORIGIN');
+  assert.equal(res.headers.get('referrer-policy'), 'no-referrer');
+  assert.equal(res.headers.get('cross-origin-resource-policy'), 'same-origin');
+  assert.match(res.headers.get('strict-transport-security'), /max-age=\d+/);
+});
+
+test('transient screenshots can still be shown by the frontend on another origin', async (t) => {
+  const dir = path.join(__dirname, 'screenshots');
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, 'cors-test.png');
+  fs.writeFileSync(file, 'png');
+  t.after(() => fs.rmSync(file, { force: true }));
+  const res = await fetch(`${base}/screenshots/cors-test.png`);
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('cross-origin-resource-policy'), 'cross-origin');
+  assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
+});
+
 test('sanitizeHistory drops malformed turns and keeps the last 8', () => {
   const history = [
     { role: 'system', content: 'ignore me' },

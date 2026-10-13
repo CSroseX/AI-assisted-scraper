@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
 const app = express();
 require('dotenv').config();
 
@@ -38,6 +39,12 @@ const corsOptions = {
   credentials: false
 };
 
+app.disable('x-powered-by');
+// The API serves JSON, feeds and images, never pages of its own, so nothing needs to load.
+// The evidence page replaces this CSP with its own.
+app.use(helmet({
+  contentSecurityPolicy: { useDefaults: false, directives: { defaultSrc: ["'none'"], frameAncestors: ["'none'"] } }
+}));
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 if (process.env.TRUST_PROXY) {
@@ -65,7 +72,11 @@ const scrapeLimiter = rateLimit({
 app.use(apiLimiter);
 
 const SCREENSHOT_TTL_MS = Number(process.env.SCREENSHOT_TTL_MS || 60 * 60 * 1000);
-app.use('/screenshots', express.static(SCREENSHOT_DIR));
+// The frontend shows these in an <img> from another origin, which helmet's same-origin CORP would block.
+app.use('/screenshots', (_req, res, next) => {
+  res.set('Cross-Origin-Resource-Policy', 'cross-origin');
+  next();
+}, express.static(SCREENSHOT_DIR));
 
 // Screenshots here are transient: delete anything older than the TTL. Those a
 // watch snapshot needs were already copied to evidence storage (evidence.js).
