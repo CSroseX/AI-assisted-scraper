@@ -1,7 +1,7 @@
 # The official Playwright image ships Chromium and every system library it
 # needs. Its tag must match the playwright version in package-lock.json, and
 # the digest pins it so a rebuild can't change the image underneath us.
-FROM mcr.microsoft.com/playwright:v1.54.1-noble@sha256:307ace13c8ba4349f790f4dfbc6eaa9fcafdeb29c218ff36129c7cacebb1e35f
+FROM mcr.microsoft.com/playwright:v1.64.0-noble@sha256:06a9939e57531807f8d5fd76ce44b53165ffb7d7501d87ab10e285c20b1e971f
 
 # The data volume takes /data's owner when Docker first creates it, so the
 # non-root user can write the database and evidence there.
