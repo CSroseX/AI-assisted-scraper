@@ -26,6 +26,7 @@ jobs:
       - run: npm ci
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+      - run: npm audit --omit=dev --audit-level=high
       - run: npm test
 
   frontend:
@@ -43,6 +44,16 @@ jobs:
       - run: npm run build
         env:
           CI: "true"
+      # CRA inlines every REACT_APP_* variable, name and value, into the public
+      # bundle, whether or not the code reads it. LINK_TOKEN unlocks feeds and
+      # evidence pages, so it must never be there. Source maps are skipped:
+      # they carry code comments, which may name the variable harmlessly.
+      - name: The build carries no LINK_TOKEN
+        run: |
+          if grep -rIl --exclude='*.map' -e LINK_TOKEN -e 'token=' build/; then
+            echo "The frontend build contains LINK_TOKEN or a ?token= link"
+            exit 1
+          fi
 
   docker:
     name: docker (compose)

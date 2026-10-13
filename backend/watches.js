@@ -1,11 +1,12 @@
 const express = require('express');
 const crypto = require('crypto');
+const fs = require('fs');
 const { getDb } = require('./db');
 const scraper = require('./scraper');
 const { computeDiff, hashChanges } = require('./diff');
 const { explainChange } = require('./explainer');
 const { enabledChannels, parseChannels, queueAlerts, serializeAlert } = require('./alerts');
-const { preserveScreenshot, discardEvidence } = require('./evidence');
+const { preserveScreenshot, discardEvidence, evidenceFile } = require('./evidence');
 const { failureMessage, failureResponse } = require('./failures');
 
 const router = express.Router();
@@ -164,6 +165,53 @@ router.get('/:id/snapshots', (req, res) => {
     screenshotPath: r.screenshot_path,
     createdAt: r.created_at
   })));
+});
+
+// Anything that isn't a positive integer can't name a snapshot, so it is
+// simply not found. The file a snapshot points at comes from the database and
+// is resolved only through evidenceFile(), never from the request.
+function getSnapshotOr404(req, res, watch) {
+  const id = /^\d+$/.test(req.params.snapshotId) ? Number(req.params.snapshotId) : 0;
+  const snapshot = id > 0
+    ? getDb().prepare('SELECT * FROM snapshots WHERE id = ? AND watch_id = ?').get(id, watch.id)
+    : null;
+  if (!snapshot) {
+    res.status(404).json({ error: 'Snapshot not found' });
+    return null;
+  }
+  return snapshot;
+}
+
+// One snapshot with its captured text, for the UI's before/after view.
+router.get('/:id/snapshots/:snapshotId', (req, res) => {
+  const watch = getWatchOr404(req, res);
+  if (!watch) return;
+  const snapshot = getSnapshotOr404(req, res, watch);
+  if (!snapshot) return;
+  res.json({
+    id: snapshot.id,
+    contentHash: snapshot.content_hash,
+    screenshotPath: snapshot.screenshot_path,
+    createdAt: snapshot.created_at,
+    content: snapshot.content
+  });
+});
+
+// A snapshot's screenshot for the UI. Unlike /evidence/files it needs no
+// LINK_TOKEN, which the frontend must never hold. It is guarded like the rest
+// of the watches API instead.
+router.get('/:id/snapshots/:snapshotId/screenshot', (req, res) => {
+  const watch = getWatchOr404(req, res);
+  if (!watch) return;
+  const snapshot = getSnapshotOr404(req, res, watch);
+  if (!snapshot) return;
+  const file = evidenceFile(snapshot.screenshot_path);
+  if (!file || !fs.existsSync(file)) return res.status(404).json({ error: 'Screenshot not found' });
+
+  // The frontend shows this in an <img> from another origin, which helmet's
+  // same-origin CORP would block. Evidence files never change once written.
+  res.set({ 'Cross-Origin-Resource-Policy': 'cross-origin', 'Cache-Control': 'private, max-age=86400' });
+  res.type('png').sendFile(file);
 });
 
 // List a watch's detected changes (newest first).
