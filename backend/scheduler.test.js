@@ -207,6 +207,7 @@ test('failures back off, then flip the watch to broken at the threshold', async 
     assert.equal(row.status, 'active', `should still be active after ${attempt} failure(s)`);
     assert.ok(row.next_check_at > now, 'must be pushed into the future by backoff');
     assert.match(row.last_error, /page unreachable/);
+    assert.equal(row.last_error_reason, 'unknown');
     now += 1000;
   }
 
@@ -227,7 +228,7 @@ test('failures back off, then flip the watch to broken at the threshold', async 
 
 test('a success after failures clears the counter and the error', async () => {
   const watch = makeWatch({ nextCheckAt: 100, failureCount: 3 });
-  getDb().prepare('UPDATE watches SET last_error = ? WHERE id = ?').run('earlier failure', watch.id);
+  getDb().prepare('UPDATE watches SET last_error = ?, last_error_reason = ? WHERE id = ?').run('earlier failure', 'timeout', watch.id);
 
   await scheduler.tick({
     now: 500,
@@ -239,6 +240,7 @@ test('a success after failures clears the counter and the error', async () => {
   const after = readWatch(watch.id);
   assert.equal(after.failure_count, 0);
   assert.equal(after.last_error, null);
+  assert.equal(after.last_error_reason, null);
   assert.equal(after.next_check_at, 500 + DAY_MS, 'should return to its normal cadence');
 
   getDb().prepare('DELETE FROM watches WHERE id = ?').run(watch.id);
@@ -306,4 +308,18 @@ test('status reports counts, due watches and upcoming checks', () => {
   assert.equal(snapshot.tickMs, scheduler.TICK_MS);
 
   for (const w of [active, paused]) getDb().prepare('DELETE FROM watches WHERE id = ?').run(w.id);
+});
+
+test('a failure stores why, as a reason code', async () => {
+  const watch = makeWatch({ nextCheckAt: 100 });
+  await scheduler.tick({
+    now: 500,
+    busy: neverBusy,
+    runCheck: async () => { throw new Error('page.goto: Timeout 20000ms exceeded.'); }
+  });
+  assert.equal(readWatch(watch.id).last_error_reason, 'timeout');
+  const listed = scheduler.status(500).upcoming.find((w) => w.id === watch.id);
+  assert.equal(listed.lastErrorReason, 'timeout');
+  assert.equal(listed.lastErrorMessage, 'The page took too long to load.');
+  getDb().prepare('DELETE FROM watches WHERE id = ?').run(watch.id);
 });

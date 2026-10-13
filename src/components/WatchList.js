@@ -10,6 +10,14 @@ const formatTime = (ms) => (ms ? new Date(ms).toLocaleString() : '—');
 // says what went wrong.
 const firstLine = (text) => String(text).split('\n')[0];
 
+// The plain reason when the backend gives one, with the technical detail on
+// hover; otherwise the raw error's first line.
+function LastError({ watch }) {
+  if (!watch.lastError) return null;
+  if (!watch.lastErrorMessage) return firstLine(watch.lastError);
+  return <span title={firstLine(watch.lastError)}>{watch.lastErrorMessage}</span>;
+}
+
 function WatchRow({ watch, busy, onCheck, onSetPaused, onDelete, onOpenChanges }) {
   const confirmDelete = () => {
     if (window.confirm(`Stop watching ${watch.url}? Its snapshots and changes are deleted too.`)) {
@@ -28,7 +36,7 @@ function WatchRow({ watch, busy, onCheck, onSetPaused, onDelete, onOpenChanges }
       <td>{formatTime(watch.lastCheckedAt)}</td>
       <td>{watch.status === 'active' ? formatTime(watch.nextCheckAt) : '—'}</td>
       <td>{watch.alertChannels.length ? watch.alertChannels.map((c) => (c === 'rss' ? 'RSS' : 'Email')).join(', ') : 'None'}</td>
-      <td className="watch-last-error">{watch.lastError ? firstLine(watch.lastError) : ''}</td>
+      <td className="watch-last-error"><LastError watch={watch} /></td>
       <td className="watch-actions">
         {busy ? (
           <span role="status">{BUSY_LABELS[busy]}</span>

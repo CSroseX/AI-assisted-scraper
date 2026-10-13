@@ -59,6 +59,19 @@ test('lists each watch with its schedule, status, alerts and the first line of i
   expect(b.getByRole('button', { name: 'Resume' })).toBeInTheDocument();
 });
 
+test('a failed check shows its plain reason, with the technical detail on hover', async () => {
+  api.listWatches.mockResolvedValue([
+    watch({
+      lastError: 'Bot check page (matched "rayid:"), HTTP 403',
+      lastErrorReason: 'bot_protection',
+      lastErrorMessage: 'The site showed a bot check (a challenge or captcha page) instead of the page.'
+    })
+  ]);
+  await renderPage();
+  const message = screen.getByText('The site showed a bot check (a challenge or captcha page) instead of the page.');
+  expect(message).toHaveAttribute('title', 'Bot check page (matched "rayid:"), HTTP 403');
+});
+
 test('says so when nothing is watched', async () => {
   await renderPage();
   expect(screen.getByText(/No pages are watched yet/)).toBeInTheDocument();

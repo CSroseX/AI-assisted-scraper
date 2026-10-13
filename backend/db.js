@@ -74,6 +74,9 @@ const ADDED_COLUMNS = [
   { table: 'watches', column: 'last_checked_at', ddl: 'ALTER TABLE watches ADD COLUMN last_checked_at INTEGER' },
   { table: 'watches', column: 'failure_count', ddl: 'ALTER TABLE watches ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0' },
   { table: 'watches', column: 'last_error', ddl: 'ALTER TABLE watches ADD COLUMN last_error TEXT' },
+  // Why the last check failed, as a failures.js reason code; last_error keeps
+  // the technical detail.
+  { table: 'watches', column: 'last_error_reason', ddl: 'ALTER TABLE watches ADD COLUMN last_error_reason TEXT' },
   // The explainer's output, stored on the change it describes. `summary` stays
   // NULL when the explanation could not be verified or the model was
   // unreachable -- the change itself is still a fact either way.
