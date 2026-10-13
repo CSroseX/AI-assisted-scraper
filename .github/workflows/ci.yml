@@ -54,16 +54,24 @@ jobs:
       - run: docker compose up --detach --wait --wait-timeout 180
       - run: curl --fail --silent --show-error http://localhost:5000/health
       - run: curl --fail --silent --show-error http://localhost:5000/watches
-      # Scrapes this repo's own README; example.com asks not to be used for testing.
-      - name: A real scrape works inside the backend container
+      # Watches this repo's own README; example.com asks not to be used for testing.
+      # The scheduler may take the first snapshot at the same time (409) or
+      # first ("no change"), so either is fine as long as one gets stored.
+      - name: A real check works inside the backend container
         run: |
-          curl --fail --silent --show-error --max-time 90 http://localhost:5000/scrape \
-            -H 'Content-Type: application/json' \
-            -d '{"url":"https://raw.githubusercontent.com/${{ github.repository }}/master/README.md"}' > scrape.json
-          node -e "
-            const r = require('./scrape.json');
-            if (!/AI-Assisted-scraper/.test(r.content)) throw new Error(JSON.stringify(r).slice(0, 500));
-            console.log('scraped', r.content.length, 'chars, screenshot', r.screenshotPath);
+          curl --fail --silent --show-error http://localhost:5000/watches             -H 'Content-Type: application/json'             -d '{"url":"https://raw.githubusercontent.com/${{ github.repository }}/master/README.md","frequency":"daily"}' > watch.json
+          id=$(node -p "require('./watch.json').id")
+          for attempt in 1 2 3 4 5 6; do
+            status=$(curl --silent --output check.json --write-out '%{http_code}' --max-time 90 -X POST "http://localhost:5000/watches/$id/check")
+            [ "$status" = 200 ] && break
+            echo "check answered $status: $(cat check.json)"; sleep 5
+          done
+          [ "$status" = 200 ]
+          docker compose exec -T backend node -e "
+            const db = require('better-sqlite3')('/data/watchdog.db', { readonly: true });
+            const s = db.prepare('SELECT content, screenshot_path FROM snapshots WHERE watch_id = ?').get($id);
+            if (!s || !/AI-Assisted-scraper/.test(s.content)) throw new Error('no snapshot of the README: ' + JSON.stringify(s).slice(0, 300));
+            console.log('stored', s.content.length, 'chars, screenshot', s.screenshot_path);
           "
       - name: The frontend dev server answers
         run: timeout 180 bash -c 'until curl --fail --silent --output /dev/null http://localhost:3000; do sleep 3; done'

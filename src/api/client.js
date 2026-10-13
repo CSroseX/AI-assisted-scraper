@@ -1,9 +1,5 @@
 import { apiUrl } from '../config';
 
-const DEFAULT_SPIN_PROMPT =
-  'Rewrite in modern English and simplify the tone. Remove any special characters and numbers. ' +
-  'Re-write the content in a way that is easy to understand and follow. Do not format the content in any way.';
-
 async function errorMessage(res, fallback) {
   try {
     const data = await res.json();
@@ -35,11 +31,6 @@ async function getJson(url, fallback) {
 
 // All functions below throw on failure; callers decide how to surface errors.
 
-export const scrapeUrl = (url) => postJson(apiUrl('/scrape'), { url }, 'Scraping failed');
-
-export const spinText = (text, prompt = DEFAULT_SPIN_PROMPT) =>
-  postJson(apiUrl('/spin'), { text, prompt }, 'Spin failed');
-
 // --- Watches ----------------------------------------------------------------
 
 export const listWatches = () => getJson(apiUrl('/watches'), 'Could not load watches');
@@ -62,19 +53,3 @@ export const checkWatch = (id) =>
 // Detected changes, newest first, each with its explanation when one verified.
 export const listChanges = (id) =>
   getJson(apiUrl(`/watches/${id}/changes`), 'Could not load changes');
-
-// Calls /ask and returns route-aware response text.
-export async function askWithRouting(content, history, message) {
-  const data = await postJson(apiUrl('/ask'), { content, history, message }, 'Request failed');
-  const routedTo = data?._routed_to || 'chat';
-
-  const fieldByRoute = {
-    chat: data?.reply,
-    spin: data?.spun,
-    review: data?.reviewed,
-    summarize: data?.summary
-  };
-  const fallbackText = data?.reply || data?.spun || data?.reviewed || data?.summary;
-  const text = fieldByRoute[routedTo] || fallbackText || 'AI failed to reply.';
-  return { text, routedTo };
-}

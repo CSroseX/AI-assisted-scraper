@@ -27,7 +27,7 @@ The backend has 183 tests, all offline.
 
 The roadmap lives in GitHub issues #14–#49, in three milestones: "Phase 1: works for you", "Testing and security" and "Phase 2: production". Issues labelled `Automated` are worked by the routine in "Automated issues" below.
 
-**Nothing has been run against real pages yet.** Every test uses synthetic content, so whether the noise filter and the explainer work on real ToS and pricing pages is unproven. The **frontend is still the original chat demo**.
+**Nothing has been run against real pages yet.** Every test uses synthetic content, so whether the noise filter and the explainer work on real ToS and pricing pages is unproven. The frontend is the watched pages screen from step 7; the chat demo is gone.
 
 Step 6 decisions, for context:
 - Users choose email, RSS or both per watch.
@@ -52,13 +52,9 @@ Steps:
 - The first task is a small script that adds the trial watches. It must use the API, so every URL goes through `validateScrapeUrl` and the guarded scraper. Never bypass `ssrf.js`.
 - Real scraping needs `npm exec playwright install chromium` once.
 
-**2. Step 7, UI, in small PRs, in parallel with the trial.** The CORS methods fix it needed is done (#15).
-1. **Watch list** plus an "add a page" form with frequency, selector and alert channels (#16).
-2. **Per-watch change timeline:** summary, the changed text, before/after, and `useful`/`noise` buttons (#17).
-   - **Design constraint:** the evidence page and `/evidence/files` need `LINK_TOKEN`, and CRA inlines `REACT_APP_*` into the public bundle, so the frontend must **not** carry that token. Render evidence from the watches API instead.
-   - Screenshots need a route the frontend can use without the token (#18). Like `/screenshots`, that route must send `Cross-Origin-Resource-Policy: cross-origin`. `helmet`'s default is `same-origin`, and that blocks an `<img>` on the frontend's origin (:3000 vs :5000).
-3. **Honest failure messages:** say *why* a page can't be read: login wall, bot protection, timeout, blocked address (#19). The mapping belongs in `sendScrapeError` and in what `runCheck` stores in `watches.last_error`.
-4. Retire the chat demo's disposable watch touchpoint (`useWatchCheck`, `ChangeExplanation`) once the timeline replaces it (#21).
+**2. Step 7, UI: built** (#16, #17, #18, #19, #21): the watch list with an add form, a change timeline per page, token-free snapshot routes, plain failure reasons, and the chat demo removed. Two design constraints still hold for any new screen:
+- The evidence page and `/evidence/files` need `LINK_TOKEN`, and CRA inlines `REACT_APP_*` into the public bundle, so the frontend must **not** carry that token. CI fails the build if it does. Render evidence from the watches API instead.
+- A route the frontend loads in an `<img>` must send `Cross-Origin-Resource-Policy: cross-origin`, as `GET /watches/:id/snapshots/:snapshotId/screenshot` does. `helmet`'s default is `same-origin`, and that blocks an `<img>` on the frontend's origin (:3000 vs :5000).
 
 **3. Tune from the trial findings:**
 - Extend `NOISE_PATTERNS` in `diff.js` and the explainer prompt.
@@ -98,7 +94,7 @@ Some issues are only partly automatable. Do this part, list the rest under "Out 
 - **#19:** backend only. Showing the message in the UI waits on #16.
 
 ### Code
-- Match the surrounding style, naming and comment density, and the patterns this file describes: `ADDED_COLUMNS` for new columns, injected seams for tests, `getWatchOr404`, `sendScrapeError`, `escapeMarkup`.
+- Match the surrounding style, naming and comment density, and the patterns this file describes: `ADDED_COLUMNS` for new columns, injected seams for tests, `getWatchOr404`, `failureResponse`, `escapeMarkup`.
 - No comments about the change or its history ("fixed for #15", "added by Claude"), no TODOs, no commented-out code, no leftover debug logging.
 - Every behaviour change gets a test, and no test touches the network.
 
@@ -140,7 +136,7 @@ npm start                      # dev server on :3000
 npm run build
 npm run lint                   # eslint src --max-warnings=0
 npm run test:ci                # single run, no watch
-npm test -- --watchAll=false -t "renders app title"   # single test by name
+npm test -- --watchAll=false -t "plain reason"   # single test by name
 ```
 
 ### Backend (`backend/`, Express + Playwright + SQLite)
@@ -176,7 +172,7 @@ The images:
 `.github/workflows/ci.yml` runs on PRs and on pushes to `main`/`master`/`dev`. `main` and `dev` no longer exist on the remote, so in practice that means `master` and PRs. Concurrency is grouped per ref with `cancel-in-progress`. There are three jobs:
 - **backend:** `npm test`.
 - **frontend:** `lint` + `test:ci` + `build` with `CI=true`, so warnings fail the build.
-- **docker (compose):** builds both images, starts the stack and waits for health. It then scrapes a real page *inside* the backend container (this repo's README on raw.githubusercontent.com), and checks that the backend runs as non-root and can write `/data`. It's the only job that exercises a real browser, so it catches a Playwright/image version mismatch.
+- **docker (compose):** builds both images, starts the stack and waits for health. It then adds this repo's README (on raw.githubusercontent.com) as a watch, checks it *inside* the backend container, and reads the stored snapshot back, and checks that the backend runs as non-root and can write `/data`. It's the only job that exercises a real browser, so it catches a Playwright/image version mismatch.
 
 The `protect-master` ruleset requires only `backend (node)` and `frontend (react)`, so **a red `docker (compose)` does not block a merge**. Treat a red docker job as blocking anyway.
 
@@ -220,7 +216,7 @@ So `snapshots` rows mean "content changed", and `changes` rows mean "changed in 
 
 Text extraction prefers the watch's `selector`, falls back to `<main>`, then `document.body` (`backend/scraper.js`).
 
-**A page that loaded but isn't the real page is a failure, never a snapshot.** `captureSnapshot` passes the HTTP status, the title, the text, whether the selector matched, and whether a visible password field or a challenge widget sits inside the watched part to `classifyPage` in `backend/failures.js`. It throws `PageUnreadableError` on a bot check, a login wall, a bare 403, a 404, any other HTTP error, or no text. Status and challenge rules apply only to short pages (under 3000 characters), since a long page is real content whatever its status says. Stored, such a page would turn into a false "change" when the real page came back. `classifyError` maps every check error to a reason code (`login_required`, `access_denied`, `bot_protection`, `not_found`, `http_error`, `timeout`, `blocked_address`, `unreachable`, `no_text`, `unknown`). The watch stores it in `last_error_reason`, and the API returns it with a plain message as `lastErrorReason`/`lastErrorMessage`. `last_error` keeps the technical detail. `failureResponse` gives `/scrape` and `POST /watches/:id/check` the same answer: 502 when the page is at fault, 500 when we are (no browser, a database error).
+**A page that loaded but isn't the real page is a failure, never a snapshot.** `captureSnapshot` passes the HTTP status, the title, the text, whether the selector matched, and whether a visible password field or a challenge widget sits inside the watched part to `classifyPage` in `backend/failures.js`. It throws `PageUnreadableError` on a bot check, a login wall, a bare 403, a 404, any other HTTP error, or no text. Status and challenge rules apply only to short pages (under 3000 characters), since a long page is real content whatever its status says. Stored, such a page would turn into a false "change" when the real page came back. `classifyError` maps every check error to a reason code (`login_required`, `access_denied`, `bot_protection`, `not_found`, `http_error`, `timeout`, `blocked_address`, `unreachable`, `no_text`, `unknown`). The watch stores it in `last_error_reason`, and the API returns it with a plain message as `lastErrorReason`/`lastErrorMessage`. `last_error` keeps the technical detail. `failureResponse` gives `POST /watches/:id/check` its answer: 502 when the page is at fault, 500 when we are (no browser, a database error).
 
 ### Diff engine (`backend/diff.js`)
 Paragraph-level LCS, then noise filtering — no LLM, by design. Paragraphs split on blank lines, whitespace collapsed so rewrapping isn't a change. `NOISE_PATTERNS` drops timestamps, `© <year>` footers, "last updated" lines, live counters and loading text. Returns `{ changes, hasMeaningfulChange }` with unchanged paragraphs dropped.
@@ -240,7 +236,7 @@ The LLM half of the principle. Runs only on a diff the engine already proved, an
 
 `explainStoredChange` in `watches.js` is **deliberately best-effort**: the change row is written *first*, then explained, and every failure is caught into `explain_error`. A model outage must never roll back a detection the diff proved — that would break "detect deterministically". `summary` being `NULL` means unexplained or unverified; the diff is still there either way.
 
-`backend/groq.js` holds `callGroq`, `withRetries` and `clampTextForModel` as a leaf module. They used to live in `index.js`, but `index.js` requires `watches.js` which requires `explainer.js`, so keeping them there would be a circular import. `index.js` re-exports them, so existing test imports still work.
+`backend/groq.js` holds `callGroq`, `withRetries` and `clampTextForModel` as a leaf module. They used to live in `index.js`, but `index.js` requires `watches.js` which requires `explainer.js`, so keeping them there would be a circular import. Their tests import them from `groq.js` (`groq.test.js`).
 
 ### Scheduler (`backend/scheduler.js`)
 **Scheduling state lives in SQLite, never in memory** — that's the design constraint. `watches.next_check_at` and `watches.failure_count` are the source of truth; `setInterval` is only a heartbeat that asks the DB what's due, so a restart can't lose state and a watch whose due time passed during downtime runs on the first tick back.
@@ -268,15 +264,13 @@ The most carefully built part of the codebase, and the plan calls the hardened s
 Watch creation runs `validateScrapeUrl` up front and stores the normalized URL, so a watch can't be used to smuggle a blocked target past the check.
 
 ### Express backend (`backend/index.js`)
-- **`/ask` is the router** (legacy demo surface, still live). `classifyIntentHeuristic` runs regex first and only falls back to a Groq classification call when it returns `'chat'`, avoiding an extra LLM round-trip. Intents are exactly `spin | chat | review | summarize`; each maps to a `handleX` that is also its own endpoint. The response carries `_routed_to` so the frontend knows which field (`spun`/`reply`/`reviewed`/`summary`) to read. Adding an intent means touching the heuristic, the classifier prompt, `routeToHandler`, and the frontend's route→field map.
-- **Abuse protection**, all env-tunable (see `.env.example`): a global `apiLimiter` plus a tighter `scrapeLimiter`, a JSON body limit, `MAX_CONCURRENT_SCRAPES` rejecting over-cap scrapes with 503 + `Retry-After`, and `cleanupScreenshots` on an interval (`.unref()`'d) expiring files past `SCREENSHOT_TTL_MS`. That cleanup only touches the transient `backend/screenshots`. Screenshots a snapshot needs live in evidence storage (see below), and `sweepEvidence` runs on the same interval.
-- `sendScrapeError` maps `/scrape` failures with the same reasons and plain messages (`failures.js`) as the watches pipeline. Add a new failure kind to `failures.js`, not to either caller.
-- `sanitizeHistory` bounds and validates chat history before it reaches the model; `clampTextForModel` caps content per call (12000 chars, 8000 for chat context) and reports `truncated`.
+- **Abuse protection**, all env-tunable (see `.env.example`): a global `apiLimiter` plus a tighter `scrapeLimiter` on `POST /watches/:id/check` (each check launches a browser page), a JSON body limit, `MAX_CONCURRENT_SCRAPES` rejecting over-cap checks with 503 + `Retry-After`, and `cleanupScreenshots` on an interval (`.unref()`'d) expiring files past `SCREENSHOT_TTL_MS`. That cleanup only touches the transient `backend/screenshots`. Screenshots a snapshot needs live in evidence storage (see below), and `sweepEvidence` runs on the same interval.
+- `clampTextForModel` (in `groq.js`) caps the text sent per model call and reports `truncated`.
 - CORS is an explicit allowlist from `CORS_ALLOWED_ORIGINS`, allowing `GET`/`POST`/`PATCH`/`PUT`/`DELETE`/`OPTIONS`. No-`Origin` requests are allowed for health checks and curl. No wildcard path exists.
 - `helmet` sets security headers on every response, and `x-powered-by` is disabled. The CSP is `default-src 'none'; frame-ancestors 'none'`, because the API serves no pages of its own; the evidence page replaces it with its own CSP. Note two of its defaults:
   - `Cross-Origin-Resource-Policy: same-origin` blocks the frontend (another origin) from showing an image, so image routes the frontend uses must override it, as `/screenshots` does.
   - HSTS is sent with `includeSubDomains`. It's ignored over plain HTTP, but on a real HTTPS domain it applies to every subdomain for a year.
-- `app` is exported and `listen` is guarded by `require.main === module` so tests import without binding a port. The `module.exports` block also re-exports internals purely for unit tests, including `callGroq`, `routeToHandler` and every handler.
+- `app` is exported and `listen` is guarded by `require.main === module` so tests import without binding a port. The `module.exports` block also exports a few internals for unit tests.
 - A graceful `SIGINT`/`SIGTERM` shutdown stops the scheduler and the email sender, closes the browser and guard proxy, then closes the DB.
 
 ### Alerts and feedback (`backend/alerts.js`)
@@ -339,23 +333,20 @@ The page shows scraped content, so it sends a CSP with `default-src 'none'` and 
 `backend/watches.js`, mounted at `/watches`. `POST` (validates url/frequency/selector/`alertChannels`, runs `validateScrapeUrl`, inserts due-immediately so the scheduler takes the baseline), `GET /`, `GET /:id`, `PATCH /:id` (`status` and/or `alertChannels`; a bad field rejects the whole request), `DELETE /:id`, `GET /:id/snapshots`, `GET /:id/changes` (includes `feedback`), `PUT`/`DELETE /:id/changes/:changeId/feedback`, `GET /:id/alerts`, `POST /:id/check`. `getWatchOr404` centralizes id validation (400 on a malformed id, 404 on a missing one) — reuse it for new routes. Rows are serialized camelCase at the boundary; the DB uses snake_case.
 
 ### Frontend layout
-~97-line `src/App.js` composing extracted pieces — write new frontend code in that shape:
+The frontend is one screen, the watched pages, built from small pieces. Write new frontend code in the same shape:
 
-- `src/config.js` — `API_BASE` + `apiUrl()` helper (the RL base is gone)
-- `src/api/client.js` — all `fetch` calls
-- `src/hooks/` — `useSessions`, `useScrapeWorkflow` (the chat pipeline), `useWatchCheck`, `useSpunEditor`, `useNotifications`
-- `src/components/` — modals, header, chat input, options bar, toast, spun editor
-- `src/utils/` — `messages.js` (incl. `findLastIndexByType`), `markdown.js`, `url.js`, `errors.js`
+- `src/App.js`: the top bar and `WatchesPage`.
+- `src/config.js`: `API_BASE` and the `apiUrl()` helper.
+- `src/api/client.js`: every `fetch` call. Each function throws an `Error` carrying the API's `error` message.
+- `src/hooks/`:
+  - `useWatches` loads the list and runs row actions. Every action reloads the list, because the backend owns each watch's state, and only the newest reload may set it.
+  - `useChangeTimeline` loads one watch's changes and alerts and saves ratings.
+- `src/components/`:
+  - `WatchesPage` with `AddWatchForm` and `WatchList`.
+  - `ChangeTimeline`, `ChangeCard` and `SnapshotCompare`.
+- `src/utils/url.js`: `isValidUrl`.
 
-This is still largely the **demo chat UI**: submit URL → `/scrape` → `/spin`, then free-form chat through `/ask`. The version-history and review/feedback hooks were removed with the services behind them. Phase 1 step 7 replaces these screens with watch-centric ones; the hooks/components/utils split is the pattern to follow, not the chat flow itself.
-
-The one watchdog touchpoint is a **"Check for Changes" button** in `OptionsBar`, driving `useWatchCheck`: it creates a watch for the session's URL, runs a check now, and renders the newest change as a `ChangeExplanation` card in the chat. Both that hook and the card are marked disposable in their own comments — step 7 replaces them with a real watchlist and timeline, so don't build on them.
-
-Messages are tagged with a `type` field (`MESSAGE_TYPES` in `src/utils/messages.js`: `'loader'`, `'spunContent'`, `'changeExplanation'`) and the UI finds the relevant one by scanning **backwards** for the last match — keep that convention when adding message kinds.
-
-`Chat` renders a non-string `msg.content` through a plain `<span>`, so a React element can be passed as a message's content. That is how both `SpunEditor` and `ChangeExplanation` are injected without `Chat` knowing about either.
-
-`src/setupTests.js` stubs `HTMLElement.prototype.scrollIntoView` because jsdom lacks it and `Chat` calls it to follow new messages.
+Errors are shown, never swallowed: form errors under the form, action errors above the list, a rating error on its own change. `ChangeCard` copies the category titles and the no-summary sentence from `backend/alertContent.js`, so a change reads the same in the UI, email and RSS. A test fails if the two drift apart.
 
 ## Environment
 
