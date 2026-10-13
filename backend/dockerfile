@@ -1,22 +1,25 @@
-FROM cgr.dev/chainguard/node:latest-dev
+# The official Playwright image ships Chromium and every system library it
+# needs. Its tag must match the playwright version in package-lock.json, and
+# the digest pins it so a rebuild can't change the image underneath us.
+FROM mcr.microsoft.com/playwright:v1.54.1-noble@sha256:307ace13c8ba4349f790f4dfbc6eaa9fcafdeb29c218ff36129c7cacebb1e35f
+
+# The data volume takes /data's owner when Docker first creates it, so the
+# non-root user can write the database and evidence there.
+RUN mkdir -p /app /data && chown pwuser:pwuser /app /data
 WORKDIR /app
+USER pwuser
 
 # Copy package.json and package-lock.json first (for caching)
-COPY package*.json ./
+COPY --chown=pwuser:pwuser package*.json ./
 
-# Install Node.js dependencies with lockfile fidelity.
-RUN npm ci
+# Install runtime dependencies with lockfile fidelity. better-sqlite3 is the
+# only dependency with an install step, a node-gyp build this image has no
+# compiler for; it loads its bundled prebuilt binary instead.
+RUN npm ci --omit=dev --ignore-scripts
 
 # Copy the rest of your backend code
-COPY . .
-
-# The data volume takes this directory's owner when Docker first creates it,
-# so the non-root user can write the database and evidence there.
-USER root
-RUN mkdir -p /data && chown node:node /data
-USER node
+COPY --chown=pwuser:pwuser . .
 
 EXPOSE 5000
-# The base image's entrypoint is node itself, so name the script directly.
-# Running node as PID 1 also lets SIGTERM reach the app's graceful shutdown.
+# Running node as PID 1 lets SIGTERM reach the app's graceful shutdown.
 ENTRYPOINT ["node", "index.js"]

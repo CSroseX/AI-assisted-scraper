@@ -54,6 +54,17 @@ jobs:
       - run: docker compose up --detach --wait --wait-timeout 180
       - run: curl --fail --silent --show-error http://localhost:5000/health
       - run: curl --fail --silent --show-error http://localhost:5000/watches
+      - name: A real scrape works inside the backend container
+        run: |
+          curl --fail --silent --show-error --max-time 90 http://localhost:5000/scrape \
+            -H 'Content-Type: application/json' -d '{"url":"https://example.com"}' > scrape.json
+          node -e "
+            const r = require('./scrape.json');
+            if (!/Example Domain/.test(r.content)) throw new Error(JSON.stringify(r).slice(0, 500));
+            console.log('scraped', r.content.length, 'chars, screenshot', r.screenshotPath);
+          "
+      - name: The frontend dev server answers
+        run: timeout 180 bash -c 'until curl --fail --silent --output /dev/null http://localhost:3000; do sleep 3; done'
       - name: The backend writes the database and evidence under /data as a non-root user
         run: |
           docker compose exec -T backend node -e "
