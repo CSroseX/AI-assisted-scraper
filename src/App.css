@@ -121,3 +121,217 @@ body, html, #root {
   gap: 12px;
   align-items: center;
 }
+
+/* Top navigation. Sits above the chat demo's URL prompt overlay (z-index 1000)
+   so switching views still works while that prompt is open. */
+:root {
+  --app-nav-height: 46px;
+}
+.app-nav {
+  position: relative;
+  z-index: 1001;
+  box-sizing: border-box;
+  height: var(--app-nav-height);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 24px;
+  background: #202123;
+}
+.app-nav-title {
+  color: #fff;
+  font-weight: 600;
+  margin-right: 16px;
+}
+.app-nav button {
+  background: transparent;
+  color: #c5c5d2;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 6px 10px;
+  font-size: 0.95em;
+  cursor: pointer;
+}
+.app-nav button[aria-current='page'] {
+  color: #fff;
+  border-bottom-color: #10a37f;
+}
+
+/* Watched pages */
+.watches-page {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 24px;
+}
+.watches-page h1 {
+  font-size: 1.4em;
+  margin: 0 0 16px;
+  color: #202123;
+}
+.watches-page button {
+  background: #fff;
+  border: 1px solid #c5c5d2;
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.watches-page button:hover {
+  background: #f0f0f0;
+}
+.watches-page button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.add-watch {
+  background: #fff;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+.add-watch-fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+}
+.add-watch label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.85em;
+  color: #444;
+}
+.add-watch-url {
+  flex: 1 1 320px;
+}
+.add-watch input[type='text'],
+.add-watch select {
+  padding: 6px 8px;
+  border: 1px solid #c5c5d2;
+  border-radius: 6px;
+  font-size: 1rem;
+}
+.add-watch fieldset {
+  display: flex;
+  gap: 12px;
+  border: none;
+  margin: 0;
+  padding: 0;
+  font-size: 0.85em;
+  color: #444;
+}
+.add-watch legend {
+  padding: 0;
+  margin-bottom: 4px;
+}
+.add-watch .add-watch-channel {
+  flex-direction: row;
+  align-items: center;
+  font-size: 1em;
+}
+.add-watch button[type='submit'] {
+  background: #10a37f;
+  border-color: #10a37f;
+  color: #fff;
+  padding: 7px 16px;
+}
+.add-watch button[type='submit']:hover {
+  background: #0d8a6b;
+}
+
+.watch-error,
+.watch-notice {
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin: 8px 0;
+}
+.watch-error {
+  background: #fdecea;
+  color: #8a1c14;
+}
+.watch-notice {
+  background: #e7f6f1;
+  color: #0b5c47;
+}
+.add-watch .watch-error {
+  margin-bottom: 0;
+}
+
+.watch-table-wrap {
+  overflow-x: auto;
+  background: #fff;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+}
+.watch-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9em;
+}
+.watch-table th,
+.watch-table td {
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid #eee;
+  vertical-align: top;
+}
+.watch-table th {
+  background: #fafafa;
+  font-weight: 600;
+  color: #444;
+}
+.watch-url {
+  max-width: 320px;
+  overflow-wrap: anywhere;
+}
+.watch-meta {
+  color: #666;
+  font-size: 0.9em;
+  margin-top: 4px;
+}
+.watch-last-error {
+  max-width: 260px;
+  color: #8a1c14;
+  overflow-wrap: anywhere;
+}
+.watch-actions {
+  white-space: nowrap;
+}
+.watch-actions button {
+  margin-right: 6px;
+}
+.watch-actions .watch-delete {
+  color: #8a1c14;
+}
+.watch-status {
+  border-radius: 10px;
+  padding: 2px 8px;
+  font-size: 0.85em;
+  font-weight: 600;
+}
+.watch-status-active {
+  background: #e7f6f1;
+  color: #0b5c47;
+}
+.watch-status-paused {
+  background: #f0f0f0;
+  color: #555;
+}
+.watch-status-broken {
+  background: #fdecea;
+  color: #8a1c14;
+}
+.watch-empty {
+  color: #666;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}

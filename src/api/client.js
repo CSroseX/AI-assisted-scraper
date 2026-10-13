@@ -14,15 +14,18 @@ async function errorMessage(res, fallback) {
   }
 }
 
-async function postJson(url, body, fallback) {
+async function sendJson(method, url, body, fallback) {
   const res = await fetch(url, {
-    method: 'POST',
+    method,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
   });
   if (!res.ok) throw new Error(await errorMessage(res, fallback));
-  return res.json();
+  // 204 No Content (e.g. a DELETE) has no body to parse.
+  return res.status === 204 ? null : res.json();
 }
+
+const postJson = (url, body, fallback) => sendJson('POST', url, body, fallback);
 
 async function getJson(url, fallback) {
   const res = await fetch(url);
@@ -38,12 +41,19 @@ export const spinText = (text, prompt = DEFAULT_SPIN_PROMPT) =>
   postJson(apiUrl('/spin'), { text, prompt }, 'Spin failed');
 
 // --- Watches ----------------------------------------------------------------
-// The watchdog surface. Phase 1 step 7 builds the real screens on top of these.
 
 export const listWatches = () => getJson(apiUrl('/watches'), 'Could not load watches');
 
-export const createWatch = (url, frequency = 'daily', selector = null) =>
-  postJson(apiUrl('/watches'), { url, frequency, selector }, 'Could not create the watch');
+// alertChannels is a subset of ['email', 'rss']; left out, the backend uses RSS only.
+export const createWatch = (url, frequency = 'daily', selector = null, alertChannels) =>
+  postJson(apiUrl('/watches'), { url, frequency, selector, alertChannels }, 'Could not create the watch');
+
+// Pause or resume ({ status }) and/or change alert channels ({ alertChannels }).
+export const updateWatch = (id, changes) =>
+  sendJson('PATCH', apiUrl(`/watches/${id}`), changes, 'Could not update the watch');
+
+export const deleteWatch = (id) =>
+  sendJson('DELETE', apiUrl(`/watches/${id}`), undefined, 'Could not delete the watch');
 
 // Runs a check now instead of waiting for the watch's schedule.
 export const checkWatch = (id) =>
