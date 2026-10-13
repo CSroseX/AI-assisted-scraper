@@ -21,8 +21,11 @@ The **backend watchdog is complete for one user**:
 - the grounded LLM explainer
 - alerts: per-watch email/RSS channels, two-layer dedup, RSS feeds, email with retries, durable evidence screenshots, and an evidence page per change
 - useful/noise feedback per change
+- hardening (PRs #52–#56): CORS allows `PATCH`/`PUT`/`DELETE`; `helmet` security headers; `.dockerignore` files; Docker images pinned by digest and running as non-root; a CI job that builds and runs the Docker stack; and 0 known vulnerabilities in backend production dependencies
 
-The backend has 179 tests, all offline.
+The backend has 183 tests, all offline.
+
+The roadmap lives in GitHub issues #14–#49, in three milestones: "Phase 1: works for you", "Testing and security" and "Phase 2: production". Issues labelled `Automated` are worked by the routine in "Automated issues" below.
 
 **Nothing has been run against real pages yet.** Every test uses synthetic content, so whether the noise filter and the explainer work on real ToS and pricing pages is unproven. The **frontend is still the original chat demo**.
 
@@ -49,12 +52,13 @@ Steps:
 - The first task is a small script that adds the trial watches. It must use the API, so every URL goes through `validateScrapeUrl` and the guarded scraper. Never bypass `ssrf.js`.
 - Real scraping needs `npm exec playwright install chromium` once.
 
-**2. Step 7, UI, in small PRs, in parallel with the trial:**
-1. **CORS:** add `PATCH`, `PUT` and `DELETE` to `corsOptions.methods` in `index.js`. Today only `GET`/`POST`/`OPTIONS` are allowed, so a browser can't pause, delete or rate anything.
-2. **Watch list** plus an "add a page" form with frequency, selector and alert channels.
-3. **Per-watch change timeline:** summary, the changed text, before/after, and `useful`/`noise` buttons. **Design constraint:** the evidence page and `/evidence/files` need `LINK_TOKEN`, and CRA inlines `REACT_APP_*` into the public bundle, so the frontend must **not** carry that token. Render evidence from the watches API instead. Screenshots need a route the frontend can use without the token.
-4. **Honest failure messages:** say *why* a page can't be read (login wall, bot protection, timeout, blocked address). The mapping belongs in `sendScrapeError` and in what `runCheck` stores in `watches.last_error`.
-5. Retire the chat demo's disposable watch touchpoint (`useWatchCheck`, `ChangeExplanation`) once the timeline replaces it.
+**2. Step 7, UI, in small PRs, in parallel with the trial.** The CORS methods fix it needed is done (#15).
+1. **Watch list** plus an "add a page" form with frequency, selector and alert channels (#16).
+2. **Per-watch change timeline:** summary, the changed text, before/after, and `useful`/`noise` buttons (#17).
+   - **Design constraint:** the evidence page and `/evidence/files` need `LINK_TOKEN`, and CRA inlines `REACT_APP_*` into the public bundle, so the frontend must **not** carry that token. Render evidence from the watches API instead.
+   - Screenshots need a route the frontend can use without the token (#18). Like `/screenshots`, that route must send `Cross-Origin-Resource-Policy: cross-origin`. `helmet`'s default is `same-origin`, and that blocks an `<img>` on the frontend's origin (:3000 vs :5000).
+3. **Honest failure messages:** say *why* a page can't be read: login wall, bot protection, timeout, blocked address (#19). The mapping belongs in `sendScrapeError` and in what `runCheck` stores in `watches.last_error`.
+4. Retire the chat demo's disposable watch touchpoint (`useWatchCheck`, `ChangeExplanation`) once the timeline replaces it (#21).
 
 **3. Tune from the trial findings:**
 - Extend `NOISE_PATTERNS` in `diff.js` and the explainer prompt.
@@ -64,7 +68,8 @@ Steps:
 - Should `cosmetic` changes alert at all? They do today. Skipping them would cut noise but trusts the LLM's label.
 - Hosting target (PLAN.md §7).
 
-**5. Before anyone else uses it (Phase 2 prep):**
+**5. Before anyone else uses it (Phase 2 prep).** The Docker image work is done (#38): a working Chromium, pinned base images, non-root users, and secrets kept out. Still to do:
+- serve the frontend as a production build; its image still runs the CRA dev server (#39);
 - free-tier hosting with HTTPS, and a free-tier SMTP provider;
 - database and evidence backups, plus snapshot retention and size caps (unbuilt);
 - the `users` table and accounts. There's a single implicit owner today.
@@ -144,13 +149,15 @@ cd backend
 npm install
 npm start                                  # :5000, starts the scheduler and the email sender too
 npm run dev                                # nodemon
-npm test                                   # node:test runner (no jest/mocha); 179 tests
+npm test                                   # node:test runner (no jest/mocha); 183 tests
 node --test ssrf.test.js                   # single file
 node --test --test-name-pattern "isPrivateIPv4" ssrf.test.js   # single test
 npm exec playwright install chromium       # required once before scraping works
 ```
 
-`better-sqlite3` is a native module, so `npm ci` compiles it; CI sets `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1` because no test launches a browser (the scraper is always injected or stubbed).
+`better-sqlite3` is a native module that ships prebuilt binaries. The backend Docker image runs `npm ci --omit=dev --ignore-scripts` and loads the bundled Linux binary, because the image has no compiler.
+
+The backend CI job sets `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1` because no unit test launches a browser; the scraper is always injected or stubbed. A real scrape is exercised only by the Docker CI job.
 
 Set `SCHEDULER_ENABLED=false` to run the API without recurring checks.
 
@@ -160,8 +167,18 @@ cp backend/.env.example backend/.env   # then set GROQ_API_KEY
 docker-compose up --build
 ```
 
+The images:
+- **Backend** (`backend/dockerfile`): `mcr.microsoft.com/playwright` pinned by digest, running as `pwuser`, with `/data` owned by that user so the named volume is writable. **Its tag must match the `playwright` version in `backend/package-lock.json`**, because the bundled Chromium has to be the one that package expects. Bump both together.
+- **Frontend** (`dockerfile`): `node:*-alpine` pinned by digest, running as `node`. It still runs the CRA dev server (#39).
+- `.dockerignore` files keep `.env`, the database, screenshots and `node_modules` out of both build contexts.
+
 ### CI
-`.github/workflows/ci.yml` runs two jobs on PRs and on pushes to `main`/`master`/`dev`. `main` and `dev` no longer exist on the remote, so in practice that means `master` and PRs. The jobs are **backend** (`npm test`) and **frontend** (`lint` + `test:ci` + `build` with `CI=true`, so warnings fail the build). The python job is gone along with the Python services. Concurrency is grouped per ref with `cancel-in-progress`.
+`.github/workflows/ci.yml` runs on PRs and on pushes to `main`/`master`/`dev`. `main` and `dev` no longer exist on the remote, so in practice that means `master` and PRs. Concurrency is grouped per ref with `cancel-in-progress`. There are three jobs:
+- **backend:** `npm test`.
+- **frontend:** `lint` + `test:ci` + `build` with `CI=true`, so warnings fail the build.
+- **docker (compose):** builds both images, starts the stack and waits for health. It then scrapes a real page *inside* the backend container (this repo's README on raw.githubusercontent.com), and checks that the backend runs as non-root and can write `/data`. It's the only job that exercises a real browser, so it catches a Playwright/image version mismatch.
+
+The `protect-master` ruleset requires only `backend (node)` and `frontend (react)`, so **a red `docker (compose)` does not block a merge**. Treat a red docker job as blocking anyway.
 
 ## Architecture
 
@@ -253,7 +270,10 @@ Watch creation runs `validateScrapeUrl` up front and stores the normalized URL, 
 - **Abuse protection**, all env-tunable (see `.env.example`): a global `apiLimiter` plus a tighter `scrapeLimiter`, a JSON body limit, `MAX_CONCURRENT_SCRAPES` rejecting over-cap scrapes with 503 + `Retry-After`, and `cleanupScreenshots` on an interval (`.unref()`'d) expiring files past `SCREENSHOT_TTL_MS`. That cleanup only touches the transient `backend/screenshots`. Screenshots a snapshot needs live in evidence storage (see below), and `sweepEvidence` runs on the same interval.
 - `sendScrapeError` is shared between `/scrape` and the watches pipeline so both report failures consistently. Extend it rather than duplicating error mapping — step 7's honest failure messaging belongs here.
 - `sanitizeHistory` bounds and validates chat history before it reaches the model; `clampTextForModel` caps content per call (12000 chars, 8000 for chat context) and reports `truncated`.
-- CORS is an explicit allowlist from `CORS_ALLOWED_ORIGINS`; no-`Origin` requests are allowed for health checks/curl. No wildcard path exists.
+- CORS is an explicit allowlist from `CORS_ALLOWED_ORIGINS`, allowing `GET`/`POST`/`PATCH`/`PUT`/`DELETE`/`OPTIONS`. No-`Origin` requests are allowed for health checks and curl. No wildcard path exists.
+- `helmet` sets security headers on every response, and `x-powered-by` is disabled. The CSP is `default-src 'none'; frame-ancestors 'none'`, because the API serves no pages of its own; the evidence page replaces it with its own CSP. Note two of its defaults:
+  - `Cross-Origin-Resource-Policy: same-origin` blocks the frontend (another origin) from showing an image, so image routes the frontend uses must override it, as `/screenshots` does.
+  - HSTS is sent with `includeSubDomains`. It's ignored over plain HTTP, but on a real HTTPS domain it applies to every subdomain for a year.
 - `app` is exported and `listen` is guarded by `require.main === module` so tests import without binding a port. The `module.exports` block also re-exports internals purely for unit tests, including `callGroq`, `routeToHandler` and every handler.
 - A graceful `SIGINT`/`SIGTERM` shutdown stops the scheduler and the email sender, closes the browser and guard proxy, then closes the DB.
 
