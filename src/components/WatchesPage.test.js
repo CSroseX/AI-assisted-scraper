@@ -224,3 +224,18 @@ test('a successful add clears an earlier error', async () => {
   expect(await screen.findByRole('status')).toHaveTextContent('Added https://a.test/pricing');
   expect(screen.queryByRole('alert')).not.toBeInTheDocument();
 });
+
+test("Changes opens that page's timeline, and back returns to the list", async () => {
+  api.listWatches.mockResolvedValue([watch({ id: 1 }), watch({ id: 2, url: 'https://b.test' })]);
+  api.listChanges.mockResolvedValue([]);
+  api.listAlerts.mockResolvedValue([]);
+  await renderPage();
+
+  userEvent.click(within(rowFor('https://b.test')).getByRole('button', { name: 'Changes' }));
+  expect(await screen.findByRole('heading', { name: 'Changes on https://b.test' })).toBeInTheDocument();
+  expect(api.listChanges).toHaveBeenCalledWith(2);
+  expect(screen.queryByRole('form', { name: 'Add a page' })).not.toBeInTheDocument();
+
+  userEvent.click(screen.getByRole('button', { name: '← All pages' }));
+  expect(screen.getByRole('form', { name: 'Add a page' })).toBeInTheDocument();
+});

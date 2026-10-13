@@ -99,9 +99,8 @@ function classifyError(err) {
 
 const failureMessage = (reason) => (reason ? FAILURE_MESSAGES[reason] || FAILURE_MESSAGES.unknown : null);
 
-// The HTTP answer for a failed scrape or check, shared by /scrape and the
-// watches API: 502 when the page is at fault, 500 when we are (no browser
-// installed, or an unexpected error).
+// The HTTP answer for a failed manual check: 502 when the page is at fault,
+// 500 when we are (no browser installed, or an unexpected error).
 function failureResponse(err) {
   if (String((err && err.message) || '').includes('Executable doesn\'t exist')) {
     return {

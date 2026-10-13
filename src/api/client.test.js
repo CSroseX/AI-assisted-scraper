@@ -1,4 +1,7 @@
-import { checkWatch, createWatch, deleteWatch, listChanges, listWatches, updateWatch } from './client';
+import {
+  checkWatch, clearFeedback, createWatch, deleteWatch, getSnapshot, listAlerts, listChanges,
+  listWatches, setFeedback, snapshotScreenshotUrl, updateWatch
+} from './client';
 
 function mockFetch(response) {
   global.fetch = jest.fn().mockResolvedValue(response);
@@ -71,6 +74,33 @@ describe('watches', () => {
     const changes = await listChanges(7);
     expect(changes[0].summary).toBe('Up by $2.');
     expect(changes[0].quotes).toEqual(['Price: $12/month.']);
+  });
+
+  test('listAlerts and getSnapshot GET their routes', async () => {
+    const fetchMock = mockFetch(ok([]));
+    await listAlerts(7);
+    expect(fetchMock.mock.calls[0][0]).toMatch(/\/watches\/7\/alerts$/);
+    mockFetch(ok({ id: 3, content: 'text' }));
+    await expect(getSnapshot(7, 3)).resolves.toEqual({ id: 3, content: 'text' });
+    expect(global.fetch.mock.calls[0][0]).toMatch(/\/watches\/7\/snapshots\/3$/);
+  });
+
+  test('snapshotScreenshotUrl carries no token', () => {
+    const url = snapshotScreenshotUrl(7, 3);
+    expect(url).toMatch(/\/watches\/7\/snapshots\/3\/screenshot$/);
+    expect(url).not.toMatch(/token/);
+  });
+
+  test('setFeedback PUTs the vote and clearFeedback DELETEs it', async () => {
+    const fetchMock = mockFetch(ok({ changeId: 3, vote: 'noise' }));
+    await setFeedback(7, 3, 'noise');
+    expect(fetchMock.mock.calls[0][0]).toMatch(/\/watches\/7\/changes\/3\/feedback$/);
+    expect(fetchMock.mock.calls[0][1].method).toBe('PUT');
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ vote: 'noise' });
+
+    mockFetch({ ok: true, status: 204, json: async () => { throw new Error('no body'); } });
+    await expect(clearFeedback(7, 3)).resolves.toBeNull();
+    expect(global.fetch.mock.calls[0][1].method).toBe('DELETE');
   });
 
   test('surfaces backend error messages', async () => {
