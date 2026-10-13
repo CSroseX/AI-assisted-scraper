@@ -63,6 +63,25 @@ export const checkWatch = (id) =>
 export const listChanges = (id) =>
   getJson(apiUrl(`/watches/${id}/changes`), 'Could not load changes');
 
+// Every alert the watch queued, one per change and channel, newest first.
+export const listAlerts = (id) =>
+  getJson(apiUrl(`/watches/${id}/alerts`), 'Could not load alerts');
+
+// One snapshot with its captured text.
+export const getSnapshot = (watchId, snapshotId) =>
+  getJson(apiUrl(`/watches/${watchId}/snapshots/${snapshotId}`), 'Could not load the snapshot');
+
+// For an <img src>. Needs no LINK_TOKEN, which the frontend must never hold.
+export const snapshotScreenshotUrl = (watchId, snapshotId) =>
+  apiUrl(`/watches/${watchId}/snapshots/${snapshotId}/screenshot`);
+
+// Rate a change 'useful' or 'noise'. The noise ratio is counted from these.
+export const setFeedback = (watchId, changeId, vote) =>
+  sendJson('PUT', apiUrl(`/watches/${watchId}/changes/${changeId}/feedback`), { vote }, 'Could not save the rating');
+
+export const clearFeedback = (watchId, changeId) =>
+  sendJson('DELETE', apiUrl(`/watches/${watchId}/changes/${changeId}/feedback`), undefined, 'Could not clear the rating');
+
 // Calls /ask and returns route-aware response text.
 export async function askWithRouting(content, history, message) {
   const data = await postJson(apiUrl('/ask'), { content, history, message }, 'Request failed');

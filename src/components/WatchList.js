@@ -10,7 +10,7 @@ const formatTime = (ms) => (ms ? new Date(ms).toLocaleString() : '—');
 // says what went wrong.
 const firstLine = (text) => String(text).split('\n')[0];
 
-function WatchRow({ watch, busy, onCheck, onSetPaused, onDelete }) {
+function WatchRow({ watch, busy, onCheck, onSetPaused, onDelete, onOpenChanges }) {
   const confirmDelete = () => {
     if (window.confirm(`Stop watching ${watch.url}? Its snapshots and changes are deleted too.`)) {
       onDelete(watch);
@@ -34,6 +34,7 @@ function WatchRow({ watch, busy, onCheck, onSetPaused, onDelete }) {
           <span role="status">{BUSY_LABELS[busy]}</span>
         ) : (
           <>
+            <button type="button" onClick={() => onOpenChanges(watch)}>Changes</button>
             <button type="button" onClick={() => onCheck(watch)}>Check now</button>
             {watch.status === 'active' ? (
               <button type="button" onClick={() => onSetPaused(watch, true)}>Pause</button>
@@ -48,7 +49,7 @@ function WatchRow({ watch, busy, onCheck, onSetPaused, onDelete }) {
   );
 }
 
-function WatchList({ watches, busy, onCheck, onSetPaused, onDelete }) {
+function WatchList({ watches, busy, onCheck, onSetPaused, onDelete, onOpenChanges }) {
   if (watches.length === 0) {
     return <p className="watch-empty">No pages are watched yet. Add one above.</p>;
   }
@@ -77,6 +78,7 @@ function WatchList({ watches, busy, onCheck, onSetPaused, onDelete }) {
               onCheck={onCheck}
               onSetPaused={onSetPaused}
               onDelete={onDelete}
+              onOpenChanges={onOpenChanges}
             />
           ))}
         </tbody>
