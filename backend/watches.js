@@ -6,6 +6,7 @@ const { computeDiff, hashChanges } = require('./diff');
 const { explainChange } = require('./explainer');
 const { enabledChannels, parseChannels, queueAlerts, serializeAlert } = require('./alerts');
 const { preserveScreenshot, discardEvidence } = require('./evidence');
+const { failureMessage, failureResponse } = require('./failures');
 
 const router = express.Router();
 
@@ -35,6 +36,9 @@ function serializeWatch(row) {
     lastCheckedAt: row.last_checked_at,
     failureCount: row.failure_count,
     lastError: row.last_error,
+    // Why the last check failed, as a reason code and in plain words.
+    lastErrorReason: row.last_error_reason,
+    lastErrorMessage: failureMessage(row.last_error_reason),
     alertChannels: enabledChannels(row)
   };
 }
@@ -125,7 +129,7 @@ router.patch('/:id', (req, res) => {
     if (status === 'active') {
       // Resuming a paused or broken watch clears its backoff so it runs again
       // promptly rather than staying parked at a far-future due time.
-      db.prepare('UPDATE watches SET status = ?, failure_count = 0, last_error = NULL, next_check_at = ?, updated_at = ? WHERE id = ?')
+      db.prepare('UPDATE watches SET status = ?, failure_count = 0, last_error = NULL, last_error_reason = NULL, next_check_at = ?, updated_at = ? WHERE id = ?')
         .run(status, now, now, watch.id);
     } else if (status !== undefined) {
       db.prepare('UPDATE watches SET status = ?, updated_at = ? WHERE id = ?').run(status, now, watch.id);
@@ -377,11 +381,11 @@ async function checkWatchNow(watchId) {
 // A manual check records when it ran and how it ended, like a scheduled one,
 // so "last checked" isn't stale. It leaves the schedule alone: failure count,
 // backoff and status stay the scheduler's to manage.
-function recordManualCheck(watchId, error) {
+function recordManualCheck(watchId, error = null, reason = null) {
   const now = Date.now();
   getDb()
-    .prepare('UPDATE watches SET last_checked_at = ?, last_error = ?, updated_at = ? WHERE id = ?')
-    .run(now, error ? String(error.message || error).slice(0, 500) : null, now, watchId);
+    .prepare('UPDATE watches SET last_checked_at = ?, last_error = ?, last_error_reason = ?, updated_at = ? WHERE id = ?')
+    .run(now, error ? String(error.message || error).slice(0, 500) : null, reason, now, watchId);
 }
 
 // Manually trigger a check for one watch outside its schedule.
@@ -396,16 +400,17 @@ router.post('/:id/check', async (req, res) => {
 
   try {
     const result = await runCheck(watch.id);
-    recordManualCheck(watch.id, null);
+    recordManualCheck(watch.id);
     res.json(result);
   } catch (err) {
     if (err instanceof CheckInProgressError) {
       res.set('Retry-After', '5');
       return res.status(409).json({ error: 'This page is already being checked, please retry shortly.' });
     }
-    recordManualCheck(watch.id, err);
-    console.error('[watches/check] error:', err.message);
-    res.status(502).json({ error: 'Could not check the watched page.' });
+    const { status, body } = failureResponse(err);
+    recordManualCheck(watch.id, err, body.reason);
+    console.error(`[watches/check] error (${body.reason}):`, err.message);
+    res.status(status).json(body);
   }
 });
 

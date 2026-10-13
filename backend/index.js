@@ -10,6 +10,7 @@ const rateLimit = require('express-rate-limit');
 const { isPrivateIPv4, isPrivateIPv6 } = require('./ssrf');
 const { SCREENSHOT_DIR, validateScrapeUrl, captureSnapshot, scraperBusy, closeScraper } = require('./scraper');
 const { closeDb } = require('./db');
+const { failureResponse } = require('./failures');
 const { sweepEvidence, adoptLegacyScreenshots } = require('./evidence');
 const { callGroq, withRetries, clampTextForModel } = require('./groq');
 const watchesRouter = require('./watches');
@@ -98,22 +99,12 @@ function cleanupScreenshots(now = Date.now()) {
   }
 }
 
-// Maps scraper/browser failures to safe client responses. Shared with the
-// watches snapshot pipeline so both surfaces report failures consistently.
+// Maps scraper/browser failures to safe client responses, with the same
+// reasons and plain messages (failures.js) as the watches pipeline.
 function sendScrapeError(res, err, label = 'Scrape API') {
-  const message = String(err.message || '');
-  if (message.includes('Executable doesn\'t exist')) {
-    console.error(`${label} error: Playwright browser binaries are not installed.`);
-    return res.status(500).json({
-      error: 'Playwright browser binaries are not installed.',
-      fix: 'Run `npx playwright install chromium` inside the backend folder.'
-    });
-  }
-  if (/ERR_TUNNEL_CONNECTION_FAILED|ERR_PROXY_CONNECTION_FAILED|ERR_EMPTY_RESPONSE|ERR_CONNECTION_CLOSED/.test(message)) {
-    return res.status(502).json({ error: 'The page could not be fetched: the destination is unreachable or blocked (private addresses are not allowed, including via redirects).' });
-  }
-  console.error(`${label} error:`, message);
-  return res.status(500).json({ error: 'Scrape failed' });
+  const { status, body } = failureResponse(err);
+  console.error(`${label} error (${body.reason}):`, String(err.message || err));
+  return res.status(status).json(body);
 }
 
 app.post('/scrape', scrapeLimiter, async (req, res) => {

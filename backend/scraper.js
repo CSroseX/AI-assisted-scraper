@@ -3,6 +3,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const { chromium } = require('playwright');
 const { validateScrapeUrl, createGuardProxy } = require('./ssrf');
+const { PageUnreadableError, classifyPage } = require('./failures');
 
 const SCREENSHOT_DIR = path.join(__dirname, 'screenshots');
 
@@ -58,8 +59,17 @@ function scraperBusy() {
   return activeScrapes >= MAX_CONCURRENT_SCRAPES;
 }
 
+// Widgets that only a bot check shows as its main content. Not a general
+// captcha match: real pages carry invisible reCAPTCHA on their forms.
+const CHALLENGE_SELECTOR = [
+  '#challenge-form', '#challenge-running', '#cf-challenge-running', '.cf-browser-verification',
+  'iframe[src*="challenges.cloudflare.com"]', '[id^="px-captcha"]'
+].join(', ');
+
 // Fetches a URL through the guarded browser and returns { content, screenshotPath }.
 // Throws on navigation/scrape failure; callers map errors to responses.
+// Throws PageUnreadableError when the page loaded but isn't the real page (a
+// bot check, a login wall, an error page, no text), so it is never stored.
 async function captureSnapshot(url, { includeScreenshot = true, selector = null } = {}) {
   activeScrapes++;
   let context;
@@ -67,14 +77,26 @@ async function captureSnapshot(url, { includeScreenshot = true, selector = null 
     const browser = await getSharedBrowser();
     context = await browser.newContext();
     const page = await context.newPage();
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
+    const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
 
-    const content = await page.evaluate((sel) => {
+    const read = await page.evaluate(({ sel, challengeSelector }) => {
       const scoped = sel ? document.querySelector(sel) : null;
-      if (scoped) return scoped.innerText;
-      const main = document.querySelector('main');
-      return main ? main.innerText : document.body.innerText;
-    }, selector);
+      const root = scoped || document.querySelector('main') || document.body;
+      // Only what is being watched counts: a hidden login pop-up elsewhere on
+      // a real page must not make it look like a login wall.
+      const visible = (el) => el.getClientRects().length > 0;
+      return {
+        content: root ? root.innerText : '',
+        title: document.title,
+        selectorMatched: !!scoped,
+        hasPasswordField: !!root && [...root.querySelectorAll('input[type="password"]')].some(visible),
+        hasChallengeElement: !!root && !!root.querySelector(challengeSelector)
+      };
+    }, { sel: selector, challengeSelector: CHALLENGE_SELECTOR });
+    const { content } = read;
+
+    const failure = classifyPage({ ...read, text: content, status: response ? response.status() : null });
+    if (failure) throw new PageUnreadableError(failure.reason, failure.detail);
 
     let relativeScreenshotPath = null;
     if (includeScreenshot) {

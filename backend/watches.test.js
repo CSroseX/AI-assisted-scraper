@@ -299,8 +299,8 @@ test('a check that fails releases its lock', async (t) => {
   const created = await (await post('/watches', { url: 'https://lock-release.test', frequency: 'daily' })).json();
 
   t.mock.method(scraper, 'captureSnapshot', async () => { throw new Error('boom'); });
-  assert.equal((await post(`/watches/${created.id}/check`)).status, 502);
-  assert.equal((await post(`/watches/${created.id}/check`)).status, 502, 'not 409: the failed check must not stay locked');
+  assert.equal((await post(`/watches/${created.id}/check`)).status, 500);
+  assert.equal((await post(`/watches/${created.id}/check`)).status, 500, 'not 409: the failed check must not stay locked');
 });
 
 test('opening the database backfills fingerprints missing from older changes', async (t) => {
@@ -338,13 +338,19 @@ test('an unchanged page never reaches the model', async (t) => {
   assert.equal(calls.length, 0);
 });
 
-test('POST /watches/:id/check surfaces scrape failures as 502', async (t) => {
+test('POST /watches/:id/check is 502 when the page is at fault, 500 when the error is ours', async (t) => {
   t.mock.method(scraper, 'validateScrapeUrl', async (url) => ({ ok: true, parsedUrl: url }));
   const created = await (await post('/watches', { url: 'https://c.test', frequency: 'daily' })).json();
 
+  t.mock.method(scraper, 'captureSnapshot', async () => { throw new Error('page.goto: Timeout 20000ms exceeded.'); });
+  const timedOut = await post(`/watches/${created.id}/check`);
+  assert.equal(timedOut.status, 502);
+  assert.deepEqual(await timedOut.json(), { error: 'The page took too long to load.', reason: 'timeout' });
+
   t.mock.method(scraper, 'captureSnapshot', async () => { throw new Error('boom'); });
-  const res = await post(`/watches/${created.id}/check`);
-  assert.equal(res.status, 502);
+  const unexpected = await post(`/watches/${created.id}/check`);
+  assert.equal(unexpected.status, 500);
+  assert.equal((await unexpected.json()).reason, 'unknown');
 });
 
 test('a manual check records when it ran and clears or keeps the error, leaving the schedule alone', async (t) => {
@@ -357,6 +363,7 @@ test('a manual check records when it ran and clears or keeps the error, leaving 
   const failed = await (await fetch(`${base}/watches/${created.id}`)).json();
   assert.ok(failed.lastCheckedAt >= before);
   assert.equal(failed.lastError, 'page.goto: net::ERR_CONNECTION_CLOSED');
+  assert.equal(failed.lastErrorReason, 'unreachable');
   assert.equal(failed.failureCount, 0);
   assert.equal(failed.status, 'active');
   assert.equal(failed.nextCheckAt, created.nextCheckAt);
@@ -367,6 +374,45 @@ test('a manual check records when it ran and clears or keeps the error, leaving 
   assert.ok(ok.lastCheckedAt >= failed.lastCheckedAt);
   assert.equal(ok.lastError, null);
   assert.equal(ok.nextCheckAt, created.nextCheckAt);
+});
+
+test('a bot check page never becomes a snapshot or a change, and the watch says why', async (t) => {
+  const { PageUnreadableError } = require('./failures');
+  explainerOff(t);
+  t.mock.method(scraper, 'validateScrapeUrl', async (url) => ({ ok: true, parsedUrl: url }));
+  const created = await (await post('/watches', { url: 'https://walled.test/pricing', frequency: 'daily' })).json();
+  const challenge = async () => { throw new PageUnreadableError('bot_protection', 'Bot check page (matched "rayid:")'); };
+  const snapshotCount = () => getDb().prepare('SELECT COUNT(*) AS n FROM snapshots WHERE watch_id = ?').get(created.id).n;
+  const changeCount = () => getDb().prepare('SELECT COUNT(*) AS n FROM changes WHERE watch_id = ?').get(created.id).n;
+
+  t.mock.method(scraper, 'captureSnapshot', challenge);
+  const res = await post(`/watches/${created.id}/check`);
+  assert.equal(res.status, 502);
+  assert.deepEqual(await res.json(), {
+    error: 'The site showed a bot check (a challenge or captcha page) instead of the page.',
+    reason: 'bot_protection'
+  });
+  assert.equal(snapshotCount(), 0);
+
+  const watch = await (await get(`/watches/${created.id}`)).json();
+  assert.equal(watch.lastErrorReason, 'bot_protection');
+  assert.equal(watch.lastErrorMessage, 'The site showed a bot check (a challenge or captcha page) instead of the page.');
+  assert.match(watch.lastError, /rayid/);
+
+  // The real page arrives, then the wall returns: still no false change.
+  t.mock.method(scraper, 'captureSnapshot', async () => ({ content: 'Pro: $10/month.', screenshotPath: null }));
+  assert.equal((await post(`/watches/${created.id}/check`)).status, 200);
+  t.mock.method(scraper, 'captureSnapshot', challenge);
+  assert.equal((await post(`/watches/${created.id}/check`)).status, 502);
+  assert.equal(snapshotCount(), 1);
+  assert.equal(changeCount(), 0);
+
+  // A good check clears the reason, as resuming does.
+  t.mock.method(scraper, 'captureSnapshot', async () => ({ content: 'Pro: $10/month.', screenshotPath: null }));
+  await post(`/watches/${created.id}/check`);
+  const cleared = await (await get(`/watches/${created.id}`)).json();
+  assert.equal(cleared.lastErrorReason, null);
+  assert.equal(cleared.lastErrorMessage, null);
 });
 
 test('POST /watches/:id/check is 503 when the scraper is at capacity', async (t) => {
@@ -490,7 +536,7 @@ test('if alerts cannot be queued, the snapshot and change roll back and the next
 
   explainerOff(t);
   t.mock.method(scraper, 'captureSnapshot', async () => ({ content: 'Fee: $2.', screenshotPath: null }));
-  assert.equal((await post(`/watches/${created.id}/check`)).status, 502);
+  assert.equal((await post(`/watches/${created.id}/check`)).status, 500, 'a failed write is our fault, not the page');
   assert.equal((await (await get(`/watches/${created.id}/snapshots`)).json()).length, 1, 'no half-written snapshot');
   assert.equal((await (await get(`/watches/${created.id}/changes`)).json()).length, 0);
 
@@ -546,7 +592,7 @@ test('when the snapshot write fails, its kept screenshot is discarded too', asyn
 
   const shot = transientScreenshot(t);
   t.mock.method(scraper, 'captureSnapshot', async () => ({ content: 'Fee: $2.', screenshotPath: shot }));
-  assert.equal((await post(`/watches/${created.id}/check`)).status, 502);
+  assert.equal((await post(`/watches/${created.id}/check`)).status, 500);
   assert.equal(fs.existsSync(evidenceFile(`evidence/${path.basename(shot)}`)), false, 'no orphaned evidence');
 });
 

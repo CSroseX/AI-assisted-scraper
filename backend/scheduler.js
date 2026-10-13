@@ -8,6 +8,7 @@
 const { getDb } = require('./db');
 const scraper = require('./scraper');
 const watches = require('./watches');
+const { classifyError, failureMessage } = require('./failures');
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
@@ -67,7 +68,7 @@ function recordSuccess(watch, now, rand = Math.random) {
   getDb()
     .prepare(
       `UPDATE watches
-       SET failure_count = 0, last_error = NULL, last_checked_at = ?, next_check_at = ?, updated_at = ?
+       SET failure_count = 0, last_error = NULL, last_error_reason = NULL, last_checked_at = ?, next_check_at = ?, updated_at = ?
        WHERE id = ?`
     )
     .run(now, due, now, watch.id);
@@ -81,10 +82,19 @@ function recordFailure(watch, error, now) {
   getDb()
     .prepare(
       `UPDATE watches
-       SET failure_count = ?, last_error = ?, last_checked_at = ?, next_check_at = ?, status = ?, updated_at = ?
+       SET failure_count = ?, last_error = ?, last_error_reason = ?, last_checked_at = ?, next_check_at = ?, status = ?, updated_at = ?
        WHERE id = ?`
     )
-    .run(failureCount, String(error && error.message ? error.message : error).slice(0, 500), now, due, broken ? 'broken' : watch.status, now, watch.id);
+    .run(
+      failureCount,
+      String(error && error.message ? error.message : error).slice(0, 500),
+      classifyError(error),
+      now,
+      due,
+      broken ? 'broken' : watch.status,
+      now,
+      watch.id
+    );
   return { failureCount, broken, due };
 }
 
@@ -167,7 +177,7 @@ function status(now = Date.now()) {
     .get(now);
   const upcoming = db
     .prepare(
-      `SELECT id, url, frequency, next_check_at, last_checked_at, failure_count, last_error
+      `SELECT id, url, frequency, next_check_at, last_checked_at, failure_count, last_error, last_error_reason
        FROM watches WHERE status = 'active' ORDER BY next_check_at ASC LIMIT 10`
     )
     .all();
@@ -184,7 +194,9 @@ function status(now = Date.now()) {
       nextCheckAt: w.next_check_at,
       lastCheckedAt: w.last_checked_at,
       failureCount: w.failure_count,
-      lastError: w.last_error
+      lastError: w.last_error,
+      lastErrorReason: w.last_error_reason,
+      lastErrorMessage: failureMessage(w.last_error_reason)
     }))
   };
 }
