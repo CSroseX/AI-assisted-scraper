@@ -1,0 +1,5 @@
+# The frontend image needs only package*.json, public/ and src/.
+node_modules/
+build/
+backend/
+.env*
