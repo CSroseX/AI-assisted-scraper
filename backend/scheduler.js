@@ -21,6 +21,9 @@ const JITTER_RATIO = num('SCHEDULER_JITTER_RATIO', 0.1);
 const MAX_FAILURES = num('SCHEDULER_MAX_FAILURES', 5);
 const BACKOFF_BASE_MS = num('SCHEDULER_BACKOFF_BASE_MS', 5 * 60 * 1000);
 const BACKOFF_MAX_MS = num('SCHEDULER_BACKOFF_MAX_MS', 6 * HOUR_MS);
+// The least time between two scheduled visits to the same host, so several
+// watches on one site do not load it back to back.
+const HOST_INTERVAL_MS = num('SCHEDULER_HOST_INTERVAL_MS', 60000);
 
 const INTERVALS = { daily: DAY_MS, weekly: 7 * DAY_MS };
 
@@ -63,6 +66,37 @@ function claimDueWatches(now, limit = BATCH_SIZE) {
     .all(now, limit);
 }
 
+function hostOf(url) {
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+// When this watch's host may next be visited, or null if it may be visited
+// now. Reads the last visit from the database, so a check made earlier in the
+// same tick, or a manual check, counts too.
+function hostFreeAt(watch, now) {
+  const host = hostOf(watch.url);
+  if (!host) return null;
+  const recent = getDb()
+    .prepare('SELECT url, last_checked_at FROM watches WHERE id != ? AND last_checked_at > ?')
+    .all(watch.id, now - HOST_INTERVAL_MS);
+  const lastVisit = Math.max(-Infinity, ...recent
+    .filter((row) => hostOf(row.url) === host)
+    .map((row) => row.last_checked_at));
+  return Number.isFinite(lastVisit) ? lastVisit + HOST_INTERVAL_MS : null;
+}
+
+// Moves a watch's due time to when its host is free, so it leaves this batch
+// instead of taking a slot from watches on other hosts.
+function deferWatch(watch, due, now) {
+  getDb()
+    .prepare('UPDATE watches SET next_check_at = ?, updated_at = ? WHERE id = ?')
+    .run(due, now, watch.id);
+}
+
 function recordSuccess(watch, now, rand = Math.random) {
   const due = nextCheckAt({ ...watch, failure_count: 0 }, 'success', now, rand);
   getDb()
@@ -101,7 +135,7 @@ function recordFailure(watch, error, now) {
 // One scheduling pass. `runCheck` and `busy` are injected so tests can run the
 // whole loop without launching a browser.
 async function tick({ now = Date.now(), runCheck = watches.runCheck, busy = scraper.scraperBusy, rand = Math.random } = {}) {
-  const result = { checked: 0, changed: 0, failed: 0, skipped: 0, broken: 0 };
+  const result = { checked: 0, changed: 0, failed: 0, skipped: 0, deferred: 0, broken: 0 };
 
   if (busy()) {
     result.skipped = 1;
@@ -113,6 +147,13 @@ async function tick({ now = Date.now(), runCheck = watches.runCheck, busy = scra
     if (busy()) {
       result.skipped++;
       break;
+    }
+
+    const freeAt = hostFreeAt(watch, now);
+    if (freeAt !== null) {
+      deferWatch(watch, freeAt, now);
+      result.deferred++;
+      continue;
     }
 
     try {
@@ -213,6 +254,8 @@ module.exports = {
   applyJitter,
   backoffDelay,
   nextCheckAt,
+  hostFreeAt,
   MAX_FAILURES,
+  HOST_INTERVAL_MS,
   TICK_MS
 };

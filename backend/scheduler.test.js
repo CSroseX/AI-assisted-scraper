@@ -20,7 +20,9 @@ test.after(() => {
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 let seq = 0;
-function makeWatch({ status = 'active', frequency = 'daily', nextCheckAt = 0, failureCount = 0 } = {}) {
+// Each watch gets its own host unless a test names one, so the per-host
+// interval only applies where a test is about it.
+function makeWatch({ status = 'active', frequency = 'daily', nextCheckAt = 0, failureCount = 0, url } = {}) {
   seq++;
   const now = 1000;
   const result = getDb()
@@ -28,7 +30,7 @@ function makeWatch({ status = 'active', frequency = 'daily', nextCheckAt = 0, fa
       `INSERT INTO watches (url, selector, frequency, status, created_at, updated_at, next_check_at, failure_count)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(`https://example.com/page-${seq}`, null, frequency, status, now, now, nextCheckAt, failureCount);
+    .run(url || `https://site-${seq}.test/page`, null, frequency, status, now, now, nextCheckAt, failureCount);
   return getDb().prepare('SELECT * FROM watches WHERE id = ?').get(result.lastInsertRowid);
 }
 
@@ -322,4 +324,63 @@ test('a failure stores why, as a reason code', async () => {
   assert.equal(listed.lastErrorReason, 'timeout');
   assert.equal(listed.lastErrorMessage, 'The page took too long to load.');
   getDb().prepare('DELETE FROM watches WHERE id = ?').run(watch.id);
+});
+
+// --- polite intervals per host --------------------------------------------
+
+const noChange = async () => ({ changed: false, change: null });
+const HOST_MS = scheduler.HOST_INTERVAL_MS;
+
+test('two due watches on one host are spaced out, not checked back to back', async () => {
+  const now = 50 * DAY_MS;
+  const first = makeWatch({ nextCheckAt: now - 2, url: 'https://shop.test/pricing' });
+  const second = makeWatch({ nextCheckAt: now - 1, url: 'https://SHOP.test/terms' });
+  const other = makeWatch({ nextCheckAt: now, url: 'https://elsewhere.test/terms' });
+  const calls = [];
+
+  const result = await scheduler.tick({
+    now,
+    busy: neverBusy,
+    rand: () => 0.5,
+    runCheck: async (id) => { calls.push(id); return noChange(); }
+  });
+
+  // The second shop.test page waits; a page on another host is not held up.
+  assert.deepEqual(calls, [first.id, other.id]);
+  assert.equal(result.checked, 2);
+  assert.equal(result.deferred, 1);
+  const deferred = readWatch(second.id);
+  assert.equal(deferred.next_check_at, now + HOST_MS);
+  assert.equal(deferred.last_checked_at, null);
+  assert.equal(deferred.failure_count, 0);
+
+  // Once the interval has passed, the deferred page runs.
+  const later = await scheduler.tick({
+    now: now + HOST_MS,
+    busy: neverBusy,
+    rand: () => 0.5,
+    runCheck: async (id) => { calls.push(id); return noChange(); }
+  });
+  assert.equal(later.checked, 1);
+  assert.equal(calls.at(-1), second.id);
+
+  for (const w of [first, second, other]) getDb().prepare('DELETE FROM watches WHERE id = ?').run(w.id);
+});
+
+test('a recent visit to the host, even a failed or manual one, defers the next', async () => {
+  const now = 60 * DAY_MS;
+  const visited = makeWatch({ nextCheckAt: now + DAY_MS, url: 'https://news.test/a' });
+  getDb().prepare('UPDATE watches SET last_checked_at = ? WHERE id = ?').run(now - 10, visited.id);
+  const due = makeWatch({ nextCheckAt: now - 1, url: 'https://news.test/b' });
+
+  assert.equal(scheduler.hostFreeAt(readWatch(due.id), now), now - 10 + HOST_MS);
+  const result = await scheduler.tick({ now, busy: neverBusy, runCheck: noChange });
+  assert.equal(result.checked, 0);
+  assert.equal(result.deferred, 1);
+
+  // A visit longer ago than the interval does not hold anything up.
+  getDb().prepare('UPDATE watches SET last_checked_at = ? WHERE id = ?').run(now - HOST_MS - 1, visited.id);
+  assert.equal(scheduler.hostFreeAt(readWatch(due.id), now), null);
+
+  for (const w of [visited, due]) getDb().prepare('DELETE FROM watches WHERE id = ?').run(w.id);
 });
