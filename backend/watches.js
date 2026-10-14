@@ -40,7 +40,8 @@ function serializeWatch(row) {
     // Why the last check failed, as a reason code and in plain words.
     lastErrorReason: row.last_error_reason,
     lastErrorMessage: failureMessage(row.last_error_reason),
-    alertChannels: enabledChannels(row)
+    alertChannels: enabledChannels(row),
+    ignoreRobots: row.ignore_robots === 1
   };
 }
 
@@ -60,7 +61,7 @@ function getWatchOr404(req, res) {
 
 // Create a watch.
 router.post('/', async (req, res) => {
-  const { url, selector = null, frequency, alertChannels = ['rss'] } = req.body || {};
+  const { url, selector = null, frequency, alertChannels = ['rss'], ignoreRobots = false } = req.body || {};
 
   if (!isNonEmptyString(url, MAX_URL_LENGTH)) {
     return res.status(400).json({ error: 'url is required' });
@@ -75,6 +76,9 @@ router.post('/', async (req, res) => {
   if (channels.error) {
     return res.status(400).json({ error: channels.error });
   }
+  if (typeof ignoreRobots !== 'boolean') {
+    return res.status(400).json({ error: 'ignoreRobots must be true or false' });
+  }
 
   const urlCheck = await scraper.validateScrapeUrl(url);
   if (!urlCheck.ok) {
@@ -85,10 +89,10 @@ router.post('/', async (req, res) => {
   // Due immediately: the scheduler takes the baseline snapshot on its next tick.
   const result = getDb()
     .prepare(
-      `INSERT INTO watches (url, selector, frequency, status, created_at, updated_at, next_check_at, alert_email, alert_rss)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO watches (url, selector, frequency, status, created_at, updated_at, next_check_at, alert_email, alert_rss, ignore_robots)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(urlCheck.parsedUrl, selector, frequency, 'active', now, now, now, Number(channels.email), Number(channels.rss));
+    .run(urlCheck.parsedUrl, selector, frequency, 'active', now, now, now, Number(channels.email), Number(channels.rss), Number(ignoreRobots));
 
   const watch = getDb().prepare('SELECT * FROM watches WHERE id = ?').get(result.lastInsertRowid);
   res.status(201).json(serializeWatch(watch));
@@ -107,14 +111,15 @@ router.get('/:id', (req, res) => {
   res.json(serializeWatch(watch));
 });
 
-// Pause or resume a watch, and/or change its alert channels.
+// Pause or resume a watch, change its alert channels, and/or set its
+// robots.txt exception.
 router.patch('/:id', (req, res) => {
   const watch = getWatchOr404(req, res);
   if (!watch) return;
 
-  const { status, alertChannels } = req.body || {};
-  if (status === undefined && alertChannels === undefined) {
-    return res.status(400).json({ error: 'Provide status and/or alertChannels' });
+  const { status, alertChannels, ignoreRobots } = req.body || {};
+  if (status === undefined && alertChannels === undefined && ignoreRobots === undefined) {
+    return res.status(400).json({ error: 'Provide status, alertChannels and/or ignoreRobots' });
   }
   if (status !== undefined && !STATUSES.includes(status)) {
     return res.status(400).json({ error: `status must be one of: ${STATUSES.join(', ')}` });
@@ -122,6 +127,9 @@ router.patch('/:id', (req, res) => {
   const channels = alertChannels === undefined ? null : parseChannels(alertChannels);
   if (channels && channels.error) {
     return res.status(400).json({ error: channels.error });
+  }
+  if (ignoreRobots !== undefined && typeof ignoreRobots !== 'boolean') {
+    return res.status(400).json({ error: 'ignoreRobots must be true or false' });
   }
 
   const db = getDb();
@@ -138,6 +146,9 @@ router.patch('/:id', (req, res) => {
     if (channels) {
       db.prepare('UPDATE watches SET alert_email = ?, alert_rss = ?, updated_at = ? WHERE id = ?')
         .run(Number(channels.email), Number(channels.rss), now, watch.id);
+    }
+    if (ignoreRobots !== undefined) {
+      db.prepare('UPDATE watches SET ignore_robots = ?, updated_at = ? WHERE id = ?').run(Number(ignoreRobots), now, watch.id);
     }
   })();
   const updated = getDb().prepare('SELECT * FROM watches WHERE id = ?').get(watch.id);
@@ -371,7 +382,11 @@ async function checkWatchNow(watchId) {
     .prepare('SELECT * FROM snapshots WHERE watch_id = ? ORDER BY created_at DESC LIMIT 1')
     .get(watchId);
 
-  const captured = await scraper.captureSnapshot(watch.url, { includeScreenshot: true, selector: watch.selector });
+  const captured = await scraper.captureSnapshot(watch.url, {
+    includeScreenshot: true,
+    selector: watch.selector,
+    respectRobots: !watch.ignore_robots
+  });
   const contentHash = hashContent(captured.content);
 
   if (latest && latest.content_hash === contentHash) {

@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const { chromium } = require('playwright');
 const { validateScrapeUrl, createGuardProxy } = require('./ssrf');
 const { PageUnreadableError, classifyPage } = require('./failures');
+const { checkRobots } = require('./robots');
 
 const SCREENSHOT_DIR = path.join(__dirname, 'screenshots');
 
@@ -69,14 +70,25 @@ const CHALLENGE_SELECTOR = [
 // Fetches a URL through the guarded browser and returns { content, screenshotPath }.
 // Throws on navigation/scrape failure; callers map errors to responses.
 // Throws PageUnreadableError when the page loaded but isn't the real page (a
-// bot check, a login wall, an error page, no text), so it is never stored.
-async function captureSnapshot(url, { includeScreenshot = true, selector = null } = {}) {
+// bot check, a login wall, an error page, no text), so it is never stored, and
+// when the site's robots.txt asks visitors not to read it (unless
+// `respectRobots` is false).
+async function captureSnapshot(url, { includeScreenshot = true, selector = null, respectRobots = true } = {}) {
   activeScrapes++;
   let context;
   try {
     const browser = await getSharedBrowser();
     context = await browser.newContext();
     const page = await context.newPage();
+    if (respectRobots) {
+      // robots.txt is read through the same guarded browser as the page.
+      await checkRobots(url, {
+        fetchRobots: async (robotsUrl) => {
+          const res = await page.goto(robotsUrl, { waitUntil: 'domcontentloaded', timeout: 10000 });
+          return res ? { status: res.status(), text: await res.text() } : null;
+        }
+      });
+    }
     const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
 
     const read = await page.evaluate(({ sel, challengeSelector }) => {
