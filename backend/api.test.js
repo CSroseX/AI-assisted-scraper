@@ -112,12 +112,13 @@ test('cleanupScreenshots removes only stale png files', () => {
   const fresh = path.join(dir, 'fresh-test.png');
   fs.writeFileSync(stale, 'x');
   fs.writeFileSync(fresh, 'x');
+  // Age the stale file rather than moving the clock forward: other test files
+  // run in parallel and keep fresh screenshots in this same folder.
+  const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+  fs.utimesSync(stale, twoHoursAgo, twoHoursAgo);
   try {
-    cleanupScreenshots(Date.now() + 2 * 60 * 60 * 1000); // pretend 2h later
-    assert.equal(fs.existsSync(stale), false);
-    assert.equal(fs.existsSync(fresh), false); // both older than TTL at that time
-    fs.writeFileSync(fresh, 'x');
     cleanupScreenshots(Date.now());
+    assert.equal(fs.existsSync(stale), false);
     assert.equal(fs.existsSync(fresh), true);
   } finally {
     for (const f of [stale, fresh]) fs.rmSync(f, { force: true });
