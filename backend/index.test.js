@@ -5,7 +5,8 @@ const {
   isPrivateIPv4,
   isPrivateIPv6,
   validateScrapeUrl,
-  parseAllowedOrigins
+  parseAllowedOrigins,
+  parseTrustProxy
 } = require('./index');
 
 test('isPrivateIPv4 detects private/loopback ranges', () => {
@@ -40,4 +41,19 @@ test('validateScrapeUrl blocks URLs with embedded credentials', async () => {
 test('parseAllowedOrigins parses comma-separated origins and defaults safely', () => {
   assert.deepEqual(parseAllowedOrigins('https://a.com, https://b.com'), ['https://a.com', 'https://b.com']);
   assert.deepEqual(parseAllowedOrigins(''), ['http://localhost:3000']);
+});
+
+test('parseTrustProxy reads a hop count, a proxy list or false', () => {
+  assert.equal(parseTrustProxy(undefined), undefined);
+  assert.equal(parseTrustProxy('  '), undefined);
+  assert.equal(parseTrustProxy('1'), 1);
+  assert.equal(parseTrustProxy('0'), 0);
+  assert.equal(parseTrustProxy('false'), false);
+  assert.equal(parseTrustProxy('loopback, 10.0.0.0/8'), 'loopback, 10.0.0.0/8');
+});
+
+test('parseTrustProxy refuses true, which would let clients choose their own IP', () => {
+  for (const raw of ['true', 'TRUE', ' True ']) {
+    assert.throws(() => parseTrustProxy(raw), /TRUST_PROXY=true/, raw);
+  }
 });
