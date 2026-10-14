@@ -46,9 +46,23 @@ app.use(helmet({
 }));
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
-if (process.env.TRUST_PROXY) {
-  app.set('trust proxy', /^\d+$/.test(process.env.TRUST_PROXY) ? Number(process.env.TRUST_PROXY) : process.env.TRUST_PROXY);
+// Which X-Forwarded-For entries to believe when working out the client IP that
+// the rate limits key on. A hop count or a list of proxy addresses is safe.
+// `true` trusts every entry, so a client could send its own header and get a
+// fresh rate-limit budget with each request; it is refused at startup.
+function parseTrustProxy(raw) {
+  const value = String(raw ?? '').trim();
+  if (!value) return undefined;
+  if (/^\d+$/.test(value)) return Number(value);
+  if (value.toLowerCase() === 'false') return false;
+  if (value.toLowerCase() === 'true') {
+    throw new Error('TRUST_PROXY=true lets clients spoof their IP and bypass rate limits; set the number of proxies in front of the app instead, e.g. TRUST_PROXY=1');
+  }
+  return value;
 }
+
+const trustProxy = parseTrustProxy(process.env.TRUST_PROXY);
+if (trustProxy !== undefined) app.set('trust proxy', trustProxy);
 
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '1mb' }));
 
@@ -159,6 +173,7 @@ module.exports = {
   isPrivateIPv4,
   isPrivateIPv6,
   parseAllowedOrigins,
+  parseTrustProxy,
   cleanupScreenshots,
   scheduler
 };
