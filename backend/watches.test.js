@@ -467,6 +467,31 @@ async function watchWithOneChange(t, url, body = {}) {
   return { watch: created, change };
 }
 
+test('a watch respects robots.txt unless it records an exception', async (t) => {
+  t.mock.method(scraper, 'validateScrapeUrl', async (url) => ({ ok: true, parsedUrl: url }));
+  const created = await (await post('/watches', { url: 'https://robots-ex.test/terms', frequency: 'daily' })).json();
+  assert.equal(created.ignoreRobots, false);
+
+  const options = [];
+  t.mock.method(scraper, 'captureSnapshot', async (_url, opts) => {
+    options.push(opts);
+    return { content: 'Terms: version 1.', screenshotPath: null };
+  });
+  await post(`/watches/${created.id}/check`);
+  assert.equal(options[0].respectRobots, true);
+
+  const updated = await (await patch(`/watches/${created.id}`, { ignoreRobots: true })).json();
+  assert.equal(updated.ignoreRobots, true);
+  await post(`/watches/${created.id}/check`);
+  assert.equal(options[1].respectRobots, false);
+
+  const withException = await (await post('/watches', { url: 'https://robots-ex2.test', frequency: 'daily', ignoreRobots: true })).json();
+  assert.equal(withException.ignoreRobots, true);
+
+  assert.equal((await post('/watches', { url: 'https://robots-ex3.test', frequency: 'daily', ignoreRobots: 'yes' })).status, 400);
+  assert.equal((await patch(`/watches/${created.id}`, { ignoreRobots: 1 })).status, 400);
+});
+
 test('a new watch alerts by RSS unless told otherwise', async (t) => {
   t.mock.method(scraper, 'validateScrapeUrl', async (url) => ({ ok: true, parsedUrl: url }));
   const plain = await (await post('/watches', { url: 'https://default-ch.test', frequency: 'daily' })).json();
