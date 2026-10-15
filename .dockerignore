@@ -1,4 +1,4 @@
-# The frontend image needs only package*.json, public/ and src/.
+# The frontend image needs only package*.json, nginx.conf, public/ and src/.
 node_modules/
 build/
 backend/

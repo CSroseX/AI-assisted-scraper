@@ -65,7 +65,6 @@ Steps:
 - Hosting target (PLAN.md §7).
 
 **5. Before anyone else uses it (Phase 2 prep).** The Docker image work is done (#38): a working Chromium, pinned base images, non-root users, and secrets kept out. Still to do:
-- serve the frontend as a production build; its image still runs the CRA dev server (#39);
 - free-tier hosting with HTTPS, and a free-tier SMTP provider;
 - database and evidence backups, plus snapshot retention and size caps (unbuilt);
 - the `users` table and accounts. There's a single implicit owner today.
@@ -165,7 +164,7 @@ docker-compose up --build
 
 The images:
 - **Backend** (`backend/dockerfile`): `mcr.microsoft.com/playwright` pinned by digest, running as `pwuser`, with `/data` owned by that user so the named volume is writable. **Its tag must match the `playwright` version in `backend/package-lock.json`**, because the bundled Chromium has to be the one that package expects. Bump both together.
-- **Frontend** (`dockerfile`): `node:*-alpine` pinned by digest, running as `node`. It still runs the CRA dev server (#39).
+- **Frontend** (`dockerfile`): two stages, both pinned by digest. `node:*-alpine` runs `npm run build` as `node`, with `REACT_APP_API_BASE` as a build argument. `nginxinc/nginx-unprivileged` then serves only the built files as a non-root user on port 8080 (`nginx.conf`), which Compose maps to :3000.
 - `.dockerignore` files keep `.env`, the database, screenshots and `node_modules` out of both build contexts.
 
 ### CI

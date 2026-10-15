@@ -1,8 +1,11 @@
 services:
   frontend:
-    build: .
+    build:
+      context: .
+      args:
+        - REACT_APP_API_BASE=http://localhost:5000
     ports:
-      - "3000:3000"
+      - "3000:8080"
     depends_on:
       backend:
         condition: service_healthy
