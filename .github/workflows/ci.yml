@@ -84,8 +84,13 @@ jobs:
             if (!s || !/AI-Assisted-scraper/.test(s.content)) throw new Error('no snapshot of the README: ' + JSON.stringify(s).slice(0, 300));
             console.log('stored', s.content.length, 'chars, screenshot', s.screenshot_path);
           "
-      - name: The frontend dev server answers
-        run: timeout 180 bash -c 'until curl --fail --silent --output /dev/null http://localhost:3000; do sleep 3; done'
+      - name: The frontend serves the production build
+        run: |
+          timeout 60 bash -c 'until curl --fail --silent --output index.html http://localhost:3000; do sleep 3; done'
+          bundle=$(grep -o '/static/js/main\.[0-9a-f]*\.js' index.html | head -n 1)
+          [ -n "$bundle" ] || { echo "index.html names no built bundle"; cat index.html; exit 1; }
+          curl --fail --silent --show-error --output /dev/null "http://localhost:3000$bundle"
+          docker compose exec -T frontend sh -c '[ "$(id -u)" != 0 ]'
       - name: The backend writes the database and evidence under /data as a non-root user
         run: |
           docker compose exec -T backend node -e "
