@@ -147,12 +147,13 @@ npm run dev                                # nodemon
 npm test                                   # node:test runner (no jest/mocha); 183 tests
 node --test ssrf.test.js                   # single file
 node --test --test-name-pattern "isPrivateIPv4" ssrf.test.js   # single test
+npm run test:browser                       # real Chromium + guard proxy on fixture pages; needs the browser installed
 npm exec playwright install chromium       # required once before scraping works
 ```
 
 `better-sqlite3` is a native module that ships prebuilt binaries. The backend Docker image runs `npm ci --omit=dev --ignore-scripts` and loads the bundled Linux binary, because the image has no compiler.
 
-The backend CI job sets `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1` because no unit test launches a browser; the scraper is always injected or stubbed. A real scrape is exercised only by the Docker CI job.
+The backend CI job sets `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1` because no unit test launches a browser; the scraper is always injected or stubbed. Real scrapes run in two places: `browser-tests/scraper.browser.js` (`npm run test:browser`), and the Docker CI job. The browser test builds its own scraper with `createScraper({ guardProxy })`, passing a guard proxy with injected DNS and dialling. That way fixture pages on loopback are reachable as a fake public host, while the proxy's real rules still block loopback, private and metadata targets and redirects to them. There is deliberately no environment variable for this.
 
 Set `SCHEDULER_ENABLED=false` to run the API without recurring checks.
 
@@ -168,10 +169,11 @@ The images:
 - `.dockerignore` files keep `.env`, the database, screenshots and `node_modules` out of both build contexts.
 
 ### CI
-`.github/workflows/ci.yml` runs on PRs and on pushes to `main`/`master`/`dev`. `main` and `dev` no longer exist on the remote, so in practice that means `master` and PRs. Concurrency is grouped per ref with `cancel-in-progress`. There are three jobs:
+`.github/workflows/ci.yml` runs on PRs and on pushes to `main`/`master`/`dev`. `main` and `dev` no longer exist on the remote, so in practice that means `master` and PRs. Concurrency is grouped per ref with `cancel-in-progress`. There are four jobs:
 - **backend:** `npm test`.
+- **browser (playwright):** installs Chromium and runs `npm run test:browser`: one successful scrape, plus blocked loopback, private-DNS and redirect targets and a robots.txt refusal.
 - **frontend:** `lint` + `test:ci` + `build` with `CI=true`, so warnings fail the build.
-- **docker (compose):** builds both images, starts the stack and waits for health. It then adds this repo's README (on raw.githubusercontent.com) as a watch, checks it *inside* the backend container, and reads the stored snapshot back, and checks that the backend runs as non-root and can write `/data`. It's the only job that exercises a real browser, so it catches a Playwright/image version mismatch.
+- **docker (compose):** builds both images, starts the stack and waits for health. It then adds this repo's README (on raw.githubusercontent.com) as a watch, checks it *inside* the backend container, and reads the stored snapshot back, and checks that the backend runs as non-root and can write `/data`. It's the only job that runs the browser inside the image, so it catches a Playwright/image version mismatch.
 
 The `protect-master` ruleset requires only `backend (node)` and `frontend (react)`, so **a red `docker (compose)` does not block a merge**. Treat a red docker job as blocking anyway.
 

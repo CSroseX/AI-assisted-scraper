@@ -84,14 +84,17 @@ test('a missing robots.txt allows everything, and a failing one refuses', async 
     const fetchRobots = async () => ({ status, text: 'User-agent: *\nDisallow: /' });
     assert.equal(await reasonOf(checkRobots('https://missing.test/terms', { fetchRobots, cache: new Map() })), null, `HTTP ${status}`);
   }
-  for (const fetchRobots of [
-    async () => ({ status: 503, text: '' }),
-    async () => null,
-    async () => { throw new Error('net::ERR_CONNECTION_RESET'); }
-  ]) {
+  for (const fetchRobots of [async () => ({ status: 503, text: '' }), async () => null]) {
     assert.equal(await reasonOf(checkRobots('https://down.test/terms', { fetchRobots, cache: new Map() })), 'robots_unavailable');
   }
   assert.match(failureMessage('robots_unavailable'), /robots\.txt/);
+});
+
+test('a robots.txt fetch that fails outright keeps its own reason', async () => {
+  const cache = new Map();
+  const fetchRobots = async () => { throw new Error('net::ERR_TUNNEL_CONNECTION_FAILED'); };
+  assert.equal(await reasonOf(checkRobots('https://blocked.test/terms', { fetchRobots, cache })), 'blocked_address');
+  assert.equal(cache.size, 0);
 });
 
 test('robots.txt is cached per origin for a day; failures are asked again', async () => {
