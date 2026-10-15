@@ -66,7 +66,7 @@ function isAllowed(robots, path) {
 }
 
 // What a robots.txt answer means: a file read is parsed, a 4xx means there are
-// no rules, and a 5xx or no answer at all means stay away (RFC 9309 2.3.1).
+// no rules, and a 5xx means stay away (RFC 9309 2.3.1).
 function robotsFromResponse(response) {
   const status = response && response.status;
   if (status >= 200 && status < 300) return { robots: parseRobots(response.text), cache: true };
@@ -85,12 +85,10 @@ async function checkRobots(url, { fetchRobots, now = Date.now(), cache = robotsC
   const robotsUrl = `${target.origin}/robots.txt`;
   let entry = cache.get(target.origin);
   if (!entry || entry.expiresAt <= now) {
-    let verdict;
-    try {
-      verdict = robotsFromResponse(await fetchRobots(robotsUrl));
-    } catch (err) {
-      verdict = { robots: DISALLOW_ALL, cache: false, unavailable: `robots.txt couldn't be fetched: ${err.message}` };
-    }
+    // A fetch that fails outright (a blocked address, a timeout, a refused
+    // connection) is thrown as it is: the page would fail the same way, and
+    // its own reason says more than "robots.txt couldn't be read".
+    const verdict = robotsFromResponse(await fetchRobots(robotsUrl));
     entry = { robots: verdict.robots, unavailable: verdict.unavailable, expiresAt: now + ROBOTS_CACHE_MS };
     if (verdict.cache) cache.set(target.origin, entry);
     else cache.delete(target.origin);

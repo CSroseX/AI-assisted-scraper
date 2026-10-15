@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "test": "node --test"
+    "test": "node --test",
+    "test:browser": "node --test browser-tests/scraper.browser.js"
   },
   "dependencies": {
     "axios": "^1.10.0",

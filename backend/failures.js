@@ -19,7 +19,7 @@ const FAILURE_MESSAGES = {
   unreachable: 'The site closed or refused the connection. Some sites do this to automated visitors.',
   no_text: 'The page loaded but had no readable text.',
   robots_disallowed: 'The site\'s robots.txt asks automated visitors not to read this page, so it isn\'t checked. To watch it anyway, record an exception for this watch.',
-  robots_unavailable: 'The site\'s robots.txt couldn\'t be read (a server error or no answer). The robots.txt standard says to stay away until it can be, so the page isn\'t checked.',
+  robots_unavailable: 'The site\'s robots.txt answered with a server error. The robots.txt standard says to stay away until it can be read, so the page isn\'t checked.',
   unknown: 'Something went wrong while reading the page.'
 };
 
