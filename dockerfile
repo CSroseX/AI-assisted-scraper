@@ -21,7 +21,7 @@ ENV REACT_APP_API_BASE=$REACT_APP_API_BASE
 RUN npm run build
 
 # Only the built files ship, served by nginx as a non-root user on port 8080.
-FROM nginxinc/nginx-unprivileged:1.30.6-alpine@sha256:782bb89768cc87b7f95c18b95baa1af250e5d451f26794f59363540161147c01
+FROM nginxinc/nginx-unprivileged:1.31.6-alpine@sha256:884e0b7f42f303641b0f4e78755aea647521dca0b89ca3be7992ad78b5c07434
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/build /usr/share/nginx/html
 EXPOSE 8080
